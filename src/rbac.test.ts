@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { init } from 'z3-solver';
-// import { Rbac, hasSeparationOfDutyConflict } from './rbac';
+import { Rbac } from './rbac';
 
 // --- Sanity check: confirms the z3-solver WASM toolchain is wired up. ---
 // Safe to delete once you trust the setup; keep the pattern for later specs
@@ -31,5 +31,15 @@ describe('z3-solver toolchain', () => {
     const xVal = model.eval(x);
     const yVal = model.eval(y);
     console.log(`${xVal}, ${yVal}`);
+  });
+});
+
+describe('basic rbac roles', () => {
+  it('can find unused roles', async () => {
+    const rbac = new Rbac();
+    rbac.addRole('editor');
+    rbac.assignRole('alice', 'editor');
+
+    expect(rbac.unusedRoles()).toEqual(['viewer', 'commenter']);
   });
 });
