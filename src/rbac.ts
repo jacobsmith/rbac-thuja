@@ -6,7 +6,6 @@ const RoleList = [
 type Role = typeof RoleList[number];
 
 
-
 export class Rbac {
     private roles: Array<Role> = [];
     private userRoles: Map<string, Role> = new Map();
