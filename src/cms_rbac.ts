@@ -38,7 +38,7 @@ export class CmsRbac<Role> {
     }
 }
 
-type CMSRole = 'writer' | 'publisher' | 'editor';
+type CMSRole = 'writer' | 'publisher' | 'editor' | 'compliance_officer';
 
 const rbac = new CmsRbac<CMSRole>();
 rbac.addRole('writer', [
@@ -52,3 +52,6 @@ rbac.addRole('publisher', [
     { action: 'publish', resource: 'article' },
     { action: 'unpublish', resource: 'article', condition: (resource) => { return !!resource && resource.published }}
 ]);
+rbac.addRole('compliance_officer', [
+    { action: 'edit', resource: 'article', condition: (resource) => { return !!resource && resource.published || !resource?.published}}
+])
