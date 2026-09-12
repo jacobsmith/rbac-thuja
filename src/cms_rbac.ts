@@ -3,7 +3,10 @@ type Resource = { name: 'article', published: boolean }
 
 type RbacAction = 'create'| 'edit'| 'publish'| 'unpublish';
 
-type RbacPermission = { action: RbacAction, resource: Resource['name'], condition?: (obj?: Resource) => boolean }
+
+type RbacBooleanExpression = { property: keyof Resource, operator: 'eq', value: true | false }
+type RbacCondition = true | RbacBooleanExpression
+type RbacPermission = { action: RbacAction, resource: Resource['name'], condition: RbacCondition };
 type RbacPermissions = Array<RbacPermission>;
 
 type userId = string;
@@ -30,11 +33,23 @@ export class CmsRbac<Role> {
         const permission = permissions.find((p) => p.action == action);
         if (!permission) { return false; }
 
-        if (!permission.condition) { 
+        if (permission.condition == true) {
             return true;
+        } 
+
+        if (!resource) {
+            return false;
         }
 
-        return permission.condition(resource);
+        switch (permission.condition.operator) {
+            case 'eq': {
+                if (resource[permission.condition.property] == permission.condition.value) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 }
 
@@ -42,16 +57,16 @@ type CMSRole = 'writer' | 'publisher' | 'editor' | 'compliance_officer';
 
 const rbac = new CmsRbac<CMSRole>();
 rbac.addRole('writer', [
-    { action: 'create', resource: 'article' },
-    { action: 'edit', resource: 'article', condition: (resource) => { return !!resource && !resource.published }},
+    { action: 'create', resource: 'article', condition: true },
+    { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false }},
 ]);
 rbac.addRole('editor', [
-    { action: 'edit', resource: 'article', condition: (resource) => { return !!resource && !resource.published }},
+    { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false }}
 ]);
 rbac.addRole('publisher', [
-    { action: 'publish', resource: 'article' },
-    { action: 'unpublish', resource: 'article', condition: (resource) => { return !!resource && resource.published }}
+    { action: 'publish', resource: 'article', condition: true },
+    { action: 'unpublish', resource: 'article', condition: { property: 'published', operator: 'eq', value: true }}
 ]);
 rbac.addRole('compliance_officer', [
-    { action: 'edit', resource: 'article', condition: (resource) => { return !!resource && resource.published || !resource?.published}}
+    { action: 'edit', resource: 'article', condition: true },
 ])
