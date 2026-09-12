@@ -13,43 +13,61 @@ type userId = string;
 
 export class CmsRbac<Role> {
     private roles: Map<Role, RbacPermissions> = new Map();
-    private userRoles: Map<userId, Role> = new Map();
+    private userRoles: Map<userId, Array<Role>> = new Map();
 
     addRole(role: Role, permissions: RbacPermissions) {
         this.roles.set(role, permissions);
     }
 
     assignRole(name: string, role: Role) {
-        this.userRoles.set(name, role);
+        const existingRoles = this.userRoles.get(name);
+        if (existingRoles) {
+            this.userRoles.set(name, [...existingRoles, role]);
+            return;
+        }
+        this.userRoles.set(name, [role]);
     }
 
     can(user: userId, action: RbacAction, resource?: Resource): boolean {
-        const userRole = this.userRoles.get(user);
-        if (!userRole) { return false; }
+        const userRoles = this.userRoles.get(user);
+        if (!userRoles) { return false; }
+        if (userRoles.length == 0) { return false; }
 
-        const permissions = this.roles.get(userRole);
-        if (!permissions) { return false; }
+        const permissions: Array<RbacPermission> = [];
+        userRoles.forEach((userRole) => {
+            const rolePermissions = this.roles.get(userRole);
+            if (rolePermissions) {
+                // add each one at a time so we don't have nested arrays
+                rolePermissions.forEach((rp) => permissions.push(rp));
+            }
+        })
 
-        const permission = permissions.find((p) => p.action == action);
-        if (!permission) { return false; }
+        if (permissions.length == 0) { return false; }
 
-        if (permission.condition == true) {
-            return true;
-        } 
+        const permissionsForAction = permissions.filter((p) => p.action == action);
+        if (permissionsForAction.length == 0) { return false; }
 
-        if (!resource) {
-            return false;
-        }
+        return permissionsForAction.some((permission) => {
+            if (permission.condition == true) {
+                return true;
+            } 
 
-        switch (permission.condition.operator) {
-            case 'eq': {
-                if (resource[permission.condition.property] == permission.condition.value) {
-                    return true;
+            if (!resource) {
+                return false;
+            }
+
+            switch (permission.condition.operator) {
+                case 'eq': {
+                    if (resource[permission.condition.property] == permission.condition.value) {
+                        return true;
+                    }
+                }
+                default {
+                    return false;
                 }
             }
-        }
 
-        return false;
+        });
     }
 }
 

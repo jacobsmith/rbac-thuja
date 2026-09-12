@@ -76,4 +76,33 @@ describe('roles', () => {
         expect(rbac.can('alice', 'edit', publishedBlog)).toEqual(false);
         expect(rbac.can('alice', 'edit', unpublishedBlog)).toEqual(true);
     });
+
+    it('allows multiple roles', async () => {
+        type CMSRole = 'writer' | 'publisher' | 'editor' | 'compliance_officer';
+
+        const rbac = new CmsRbac<CMSRole>();
+        rbac.addRole('writer', [
+            { action: 'create', resource: 'article', condition: true },
+            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false } },
+        ]);
+        rbac.addRole('editor', [
+            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false } }
+        ]);
+        rbac.addRole('publisher', [
+            { action: 'publish', resource: 'article', condition: true },
+            { action: 'unpublish', resource: 'article', condition: { property: 'published', operator: 'eq', value: true } }
+        ]);
+        rbac.addRole('compliance_officer', [
+            { action: 'edit', resource: 'article', condition: true },
+        ])
+
+        const publishedBlog = { name: 'article' as const, published: true }
+        const unpublishedBlog = { name: 'article' as const, published: false }
+
+        rbac.assignRole('alice', 'writer');
+        rbac.assignRole('alice', 'publisher');
+        expect(rbac.can('alice', 'create')).toEqual(true);
+        expect(rbac.can('alice', 'edit', publishedBlog)).toEqual(false);
+        expect(rbac.can('alice', 'publish', unpublishedBlog)).toEqual(true);
+    });
 });
