@@ -1,19 +1,7 @@
-type Resource = { name: 'article', published: boolean }
 
+import { Encoder, type RbacAction, type RbacPermission, type RbacPermissions, type Resource, type userId } from "./encoder";
 
-type RbacAction = 'create'| 'edit'| 'publish'| 'unpublish';
-
-
-type RbacBooleanExpression = { property: keyof Resource, operator: 'eq', value: true | false }
-type RbacCondition = true | RbacBooleanExpression
-type RbacPermission = { action: RbacAction, resource: Resource['name'], condition: RbacCondition };
-type RbacPermissions = Array<RbacPermission>;
-
-type userId = string;
-
-export class CmsRbac<Role> {
-    private roles: Map<Role, RbacPermissions> = new Map();
-    private userRoles: Map<userId, Array<Role>> = new Map();
+export class CmsRbac<Role> extends Encoder<Role> {
 
     addRole(role: Role, permissions: RbacPermissions) {
         this.roles.set(role, permissions);
@@ -62,7 +50,7 @@ export class CmsRbac<Role> {
                         return true;
                     }
                 }
-                default {
+                default: {
                     return false;
                 }
             }
