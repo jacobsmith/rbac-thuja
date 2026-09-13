@@ -1,9 +1,19 @@
 
 import { Encoder, type RbacAction, type RbacPermission, type RbacPermissions, type Resource, type userId } from "./encoder";
 
+class ImmutableRolesError extends Error {
+    constructor() {
+        super("Roles have already been accessed for validation; additional Roles cannot be assigned within this Rbac instance.");
+        this.name = this.constructor.name;
+    }
+}
+
 export class CmsRbac<Role> extends Encoder<Role> {
 
     addRole(role: Role, permissions: RbacPermissions) {
+        if (this.roleBitVectorsAccessed) {
+            throw new ImmutableRolesError();
+        }
         this.roles.set(role, permissions);
     }
 
