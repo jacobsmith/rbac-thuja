@@ -1,5 +1,5 @@
 
-import { Encoder, type RbacAction, type RbacPermission, type RbacPermissions, type Resource, type userId } from "./encoder";
+import { Encodable, type RbacAction, type RbacPermission, type RbacPermissions, type Resource, type userId } from "./encoder";
 
 class ImmutableRolesError extends Error {
     constructor() {
@@ -8,7 +8,7 @@ class ImmutableRolesError extends Error {
     }
 }
 
-export class CmsRbac<Role> extends Encoder<Role> {
+export class CmsRbac<Role> extends Encodable<Role> {
 
     addRole(role: Role, permissions: RbacPermissions) {
         if (this.roleBitVectorsAccessed) {

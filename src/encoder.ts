@@ -18,7 +18,7 @@ class RbacBitVector<Role> {
     }
 }
 
-export class Encoder<Role> {
+export class Encodable<Role> {
     protected roles: Map<Role, RbacPermissions> = new Map();
     protected userRoles: Map<userId, Array<Role>> = new Map();
     protected roleBitVectorsAccessed = false;
