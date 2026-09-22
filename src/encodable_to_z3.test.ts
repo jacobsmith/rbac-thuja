@@ -30,4 +30,35 @@ describe('EncodableToZ3', () => {
 
 
    });
+    
+   it('can encode all conditions', async () => {
+        type CMSRole = 'writer' | 'publisher' | 'editor' | 'compliance_officer';
+
+        const rbac = new CmsRbac<CMSRole>();
+        rbac.addRole('writer', [
+            { action: 'create', resource: 'article', condition: true },
+            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false } },
+        ]);
+
+        const { Context } = await init();
+        const context = new Context('main');
+        const encodableToZ3 = new EncodableToZ3(rbac, context);
+
+        const published = context.Bool.const('published');
+        // I don't quite understand the "context" within z3 and how that works
+        const encodedConditions = encodableToZ3.getEncodedConditions(published);
+        
+        const solver = new context.Solver();
+        for (const condition of encodedConditions) {
+            solver.add(condition.neq(context.Not(published))); // refutation
+        }
+
+        const response = await solver.check();
+
+        console.log('ahhh, ', response);
+
+        expect(response).toEqual('unsat');
+
+
+   });
 });

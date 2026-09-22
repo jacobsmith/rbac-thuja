@@ -9,6 +9,25 @@ export class EncodableToZ3<T> {
         this.z3Context = context;
     }
 
+    public getEncodedConditions(published: Bool) {
+        const roles = this.encodable.roles.keys();
+
+        const conditions = [];
+
+        for (const role of roles) {
+            const roleConditions = this.encodable.roles.get(role);
+            if (roleConditions == undefined) {
+                continue;
+            }
+
+            for (const condition of roleConditions) {
+                conditions.push(this.encodeCondition(condition.condition, published));
+            }
+        }
+
+        return conditions;
+    }
+
     public encodeCondition(condition: RbacCondition, published: Bool): Bool {
         if (condition == true) {
             return this.z3Context.Bool.val(true);
