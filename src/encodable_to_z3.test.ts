@@ -10,7 +10,7 @@ describe('EncodableToZ3', () => {
         const rbac = new CmsRbac<CMSRole>();
         rbac.addRole('writer', [
             { action: 'create', resource: 'article', condition: true },
-            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false } },
+            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' } },
         ]);
 
         const { Context } = await init();
@@ -19,7 +19,7 @@ describe('EncodableToZ3', () => {
 
         const published = context.Bool.const('published');
         // I don't quite understand the "context" within z3 and how that works
-        const encodedCondition = encodableToZ3.encodeCondition({ operator: 'eq', property: 'published', value: false }, published);
+        const encodedCondition = encodableToZ3.encodeCondition({ operator: 'eq', property: 'published', value: false, type: 'LiteralExpression' }, published);
         
         const solver = new context.Solver();
         solver.add(encodedCondition.neq(context.Not(published))); // refutation
@@ -37,7 +37,7 @@ describe('EncodableToZ3', () => {
         const rbac = new CmsRbac<CMSRole>();
         rbac.addRole('writer', [
             { action: 'create', resource: 'article', condition: true },
-            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false } },
+            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' } },
         ]);
 
         const { Context } = await init();
@@ -68,14 +68,14 @@ describe('EncodableToZ3', () => {
         const rbac = new CmsRbac<CMSRole>();
         rbac.addRole('writer', [
             { action: 'create', resource: 'article', condition: true },
-            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false } },
+            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' } },
         ]);
         rbac.addRole('editor', [
-            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false } }
+            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' } }
         ]);
         rbac.addRole('publisher', [
             { action: 'publish', resource: 'article', condition: true },
-            { action: 'unpublish', resource: 'article', condition: { property: 'published', operator: 'eq', value: true } }
+            { action: 'unpublish', resource: 'article', condition: { property: 'published', operator: 'eq', value: true, type: 'LiteralExpression' } }
         ]);
         rbac.addRole('compliance_officer', [
             { action: 'edit', resource: 'article', condition: true },

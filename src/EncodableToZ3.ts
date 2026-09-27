@@ -1,5 +1,5 @@
 import type { Context, Bool, BitVecNum, BitVec } from "z3-solver";
-import type { Encodable, RbacAction, RbacCondition } from "./encoder";
+import type { Encodable, RbacAction, RbacBooleanContextExpression, RbacBooleanExpression, RbacCondition } from "./encoder";
 
 export class EncodableToZ3<T> {
     private encodable: Encodable<T>;
@@ -36,11 +36,27 @@ export class EncodableToZ3<T> {
             return this.z3Context.Bool.val(true);
         }
 
+        switch (condition.type) {
+            case 'LiteralExpression': {
+                return this.literalExpressionEncoder(condition, published);
+            }
+            case 'ContextExpression': {
+                return this.contextExpressionEncoder(condition, published);
+            }
+        }
+    }
+
+    public literalExpressionEncoder (condition: RbacBooleanExpression, published: Bool) {
         switch (condition.operator) {
             case 'eq': {
                 return published.eq(condition.value);
             }
         }
+    }
+
+    public contextExpressionEncoder(condition: RbacBooleanContextExpression, published: Bool): Bool {
+        // todo -- write this
+        return this.z3Context.Bool.val(false);
     }
 
     public holdsRole(mask: BitVecNum): Bool {

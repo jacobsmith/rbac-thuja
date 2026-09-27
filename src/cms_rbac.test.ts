@@ -9,14 +9,14 @@ describe('roles', () => {
         const rbac = new CmsRbac<CMSRole>();
         rbac.addRole('writer', [
             { action: 'create', resource: 'article', condition: true },
-            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: true } },
+            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: true, type: 'LiteralExpression' } },
         ]);
         rbac.addRole('editor', [
-            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false } }
+            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' } }
         ]);
         rbac.addRole('publisher', [
             { action: 'publish', resource: 'article', condition: true },
-            { action: 'unpublish', resource: 'article', condition: { property: 'published', operator: 'eq', value: true } }
+            { action: 'unpublish', resource: 'article', condition: { property: 'published', operator: 'eq', value: true, type: 'LiteralExpression' } }
         ]);
         rbac.addRole('compliance_officer', [
             { action: 'edit', resource: 'article', condition: true },
@@ -33,14 +33,14 @@ describe('roles', () => {
         const rbac = new CmsRbac<CMSRole>();
         rbac.addRole('writer', [
             { action: 'create', resource: 'article', condition: true },
-            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: true } },
+            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: true, type: 'LiteralExpression' } },
         ]);
         rbac.addRole('editor', [
-            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false } }
+            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' } }
         ]);
         rbac.addRole('publisher', [
             { action: 'publish', resource: 'article', condition: true },
-            { action: 'unpublish', resource: 'article', condition: { property: 'published', operator: 'eq', value: true } }
+            { action: 'unpublish', resource: 'article', condition: { property: 'published', operator: 'eq', value: true, type: 'LiteralExpression' } }
         ]);
         rbac.addRole('compliance_officer', [
             { action: 'edit', resource: 'article', condition: true },
@@ -56,14 +56,14 @@ describe('roles', () => {
         const rbac = new CmsRbac<CMSRole>();
         rbac.addRole('writer', [
             { action: 'create', resource: 'article', condition: true },
-            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false } },
+            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' } },
         ]);
         rbac.addRole('editor', [
-            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false } }
+            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' } }
         ]);
         rbac.addRole('publisher', [
             { action: 'publish', resource: 'article', condition: true },
-            { action: 'unpublish', resource: 'article', condition: { property: 'published', operator: 'eq', value: true } }
+            { action: 'unpublish', resource: 'article', condition: { property: 'published', operator: 'eq', value: true, type: 'LiteralExpression' } }
         ]);
         rbac.addRole('compliance_officer', [
             { action: 'edit', resource: 'article', condition: true },
@@ -83,14 +83,14 @@ describe('roles', () => {
         const rbac = new CmsRbac<CMSRole>();
         rbac.addRole('writer', [
             { action: 'create', resource: 'article', condition: true },
-            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false } },
+            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' } },
         ]);
         rbac.addRole('editor', [
-            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false } }
+            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' } }
         ]);
         rbac.addRole('publisher', [
             { action: 'publish', resource: 'article', condition: true },
-            { action: 'unpublish', resource: 'article', condition: { property: 'published', operator: 'eq', value: true } }
+            { action: 'unpublish', resource: 'article', condition: { property: 'published', operator: 'eq', value: true, type: 'LiteralExpression' } }
         ]);
         rbac.addRole('compliance_officer', [
             { action: 'edit', resource: 'article', condition: true },
@@ -112,14 +112,14 @@ describe('roles', () => {
         const rbac = new CmsRbac<CMSRole>();
         rbac.addRole('writer', [
             { action: 'create', resource: 'article', condition: true },
-            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false } },
+            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' } },
         ]);
         rbac.addRole('editor', [
-            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false } }
+            { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' } }
         ]);
         rbac.addRole('publisher', [
             { action: 'publish', resource: 'article', condition: true },
-            { action: 'unpublish', resource: 'article', condition: { property: 'published', operator: 'eq', value: true } }
+            { action: 'unpublish', resource: 'article', condition: { property: 'published', operator: 'eq', value: true, type: 'LiteralExpression' } }
         ]);
         rbac.addRole('compliance_officer', [
             { action: 'edit', resource: 'article', condition: true },

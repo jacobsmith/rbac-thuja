@@ -1,5 +1,5 @@
 
-import { Encodable, type RbacAction, type RbacPermission, type RbacPermissions, type Resource, type userId } from "./encoder";
+import { Encodable, type RbacAction, type RbacBooleanExpression, type RbacPermission, type RbacPermissions, type Resource, type userId } from "./encoder";
 
 class ImmutableRolesError extends Error {
     constructor() {
@@ -54,9 +54,23 @@ export class CmsRbac<Role> extends Encodable<Role> {
                 return false;
             }
 
-            switch (permission.condition.operator) {
+            switch (permission.condition.type) {
+                case 'LiteralExpression': {
+                    return this.canLiteralExpression(permission.condition, resource);
+                }
+                case 'ContextExpression': {
+                    throw new Error('ContextExpression conditions are not yet supported by can()');
+                }
+            }
+
+
+        });
+    }
+
+    private canLiteralExpression(condition: RbacBooleanExpression, resource: Resource): boolean {
+            switch (condition.operator) {
                 case 'eq': {
-                    if (resource[permission.condition.property] == permission.condition.value) {
+                    if (resource[condition.property] == condition.value) {
                         return true;
                     }
                 }
@@ -65,7 +79,6 @@ export class CmsRbac<Role> extends Encodable<Role> {
                 }
             }
 
-        });
     }
 }
 
@@ -74,14 +87,14 @@ type CMSRole = 'writer' | 'publisher' | 'editor' | 'compliance_officer';
 const rbac = new CmsRbac<CMSRole>();
 rbac.addRole('writer', [
     { action: 'create', resource: 'article', condition: true },
-    { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false }},
+    { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' }},
 ]);
 rbac.addRole('editor', [
-    { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false }}
+    { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' }}
 ]);
 rbac.addRole('publisher', [
     { action: 'publish', resource: 'article', condition: true },
-    { action: 'unpublish', resource: 'article', condition: { property: 'published', operator: 'eq', value: true }}
+    { action: 'unpublish', resource: 'article', condition: { property: 'published', operator: 'eq', value: true, type: 'LiteralExpression' }}
 ]);
 rbac.addRole('compliance_officer', [
     { action: 'edit', resource: 'article', condition: true },
