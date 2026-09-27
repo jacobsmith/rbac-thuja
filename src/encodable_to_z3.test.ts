@@ -18,9 +18,10 @@ describe('EncodableToZ3', () => {
         const encodableToZ3 = new EncodableToZ3(rbac, context);
 
         const published = context.Bool.const('published');
-        // I don't quite understand the "context" within z3 and how that works
-        const encodedCondition = encodableToZ3.encodeCondition({ operator: 'eq', property: 'published', value: false, type: 'LiteralExpression' }, published);
-        
+        const resource = { published, authorId: context.String.const('authorId') };
+        const rbacContext = { id: context.String.const('id') };
+        const encodedCondition = encodableToZ3.encodeCondition({ operator: 'eq', property: 'published', value: false, type: 'LiteralExpression' }, resource, rbacContext);
+
         const solver = new context.Solver();
         solver.add(encodedCondition.neq(context.Not(published))); // refutation
 
@@ -45,8 +46,9 @@ describe('EncodableToZ3', () => {
         const encodableToZ3 = new EncodableToZ3(rbac, context);
 
         const published = context.Bool.const('published');
-        // I don't quite understand the "context" within z3 and how that works
-        const encodedConditions = encodableToZ3.getEncodedConditions(published);
+        const resource = { published, authorId: context.String.const('authorId') };
+        const rbacContext = { id: context.String.const('id') };
+        const encodedConditions = encodableToZ3.getEncodedConditions(resource, rbacContext);
         
         const solver = new context.Solver();
         for (const condition of encodedConditions) {
@@ -86,7 +88,9 @@ describe('EncodableToZ3', () => {
         const encodableToZ3 = new EncodableToZ3(rbac, context);
 
         const published = context.Bool.const('published');
-        const formula = encodableToZ3.anyRoleCanDo('edit', published);
+        const resource = { published, authorId: context.String.const('authorId') };
+        const rbacContext = { id: context.String.const('id') };
+        const formula = encodableToZ3.anyRoleCanDo('edit', resource, rbacContext);
 
         const solver = new context.Solver();
         solver.add(formula);
@@ -108,5 +112,31 @@ describe('EncodableToZ3', () => {
 
         console.log('role(s) that satisfy the violation:', impliedRoles);
         expect(impliedRoles).toContain('compliance_officer');
+   });
+
+   it('encodes a context expression as equality between two symbolic strings', async () => {
+        type CMSRole = 'writer';
+
+        const rbac = new CmsRbac<CMSRole>();
+        rbac.addRole('writer', [
+            { action: 'edit', resource: 'article', condition: { property: 'authorId', operator: 'eq', contextProperty: 'id', type: 'ContextExpression' } }
+        ]);
+
+        const { Context } = await init();
+        const context = new Context('main');
+        const encodableToZ3 = new EncodableToZ3(rbac, context);
+
+        const authorId = context.String.const('authorId');
+        const actorId = context.String.const('actorId');
+
+        const condition = { property: 'authorId', operator: 'eq', contextProperty: 'id', type: 'ContextExpression' } as const;
+        const resource = { authorId, published: context.Bool.const('published') };
+        const encoded = encodableToZ3.encodeCondition(condition, resource, { id: actorId });
+
+        const solver = new context.Solver();
+        solver.add(encoded.neq(authorId.eq(actorId))); // refutation: encoded formula should always agree with the hand-written equivalent
+
+        const response = await solver.check();
+        expect(response).toEqual('unsat');
    });
 });

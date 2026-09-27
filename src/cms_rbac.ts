@@ -1,5 +1,5 @@
 
-import { Encodable, type RbacAction, type RbacBooleanExpression, type RbacPermission, type RbacPermissions, type Resource, type userId } from "./encoder";
+import { Encodable, type RbacAction, type RbacBooleanContextExpression, type RbacBooleanExpression, type RbacContext, type RbacPermission, type RbacPermissions, type Resource, type userId } from "./encoder";
 
 class ImmutableRolesError extends Error {
     constructor() {
@@ -26,7 +26,7 @@ export class CmsRbac<Role> extends Encodable<Role> {
         this.userRoles.set(name, [role]);
     }
 
-    can(user: userId, action: RbacAction, resource?: Resource): boolean {
+    can(user: userId, action: RbacAction, resource?: Resource, context?: RbacContext): boolean {
         const userRoles = this.userRoles.get(user);
         if (!userRoles) { return false; }
         if (userRoles.length == 0) { return false; }
@@ -48,7 +48,7 @@ export class CmsRbac<Role> extends Encodable<Role> {
         return permissionsForAction.some((permission) => {
             if (permission.condition == true) {
                 return true;
-            } 
+            }
 
             if (!resource) {
                 return false;
@@ -59,7 +59,8 @@ export class CmsRbac<Role> extends Encodable<Role> {
                     return this.canLiteralExpression(permission.condition, resource);
                 }
                 case 'ContextExpression': {
-                    throw new Error('ContextExpression conditions are not yet supported by can()');
+                    if (!context) { return false };
+                    return this.canContextExpression(permission.condition, resource, context);
                 }
             }
 
@@ -68,16 +69,30 @@ export class CmsRbac<Role> extends Encodable<Role> {
     }
 
     private canLiteralExpression(condition: RbacBooleanExpression, resource: Resource): boolean {
-            switch (condition.operator) {
-                case 'eq': {
-                    if (resource[condition.property] == condition.value) {
-                        return true;
-                    }
-                }
-                default: {
-                    return false;
+        switch (condition.operator) {
+            case 'eq': {
+                if (resource[condition.property] == condition.value) {
+                    return true;
                 }
             }
+            default: {
+                return false;
+            }
+        }
+
+    }
+
+    private canContextExpression(condition: RbacBooleanContextExpression, resource: Resource, context: RbacContext): boolean {
+        switch (condition.operator) {
+            case 'eq': {
+                if (resource[condition.property] == context[condition.contextProperty]) {
+                    return true;
+                }
+            }
+            default: {
+                return false;
+            }
+        }
 
     }
 }
@@ -87,14 +102,14 @@ type CMSRole = 'writer' | 'publisher' | 'editor' | 'compliance_officer';
 const rbac = new CmsRbac<CMSRole>();
 rbac.addRole('writer', [
     { action: 'create', resource: 'article', condition: true },
-    { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' }},
+    { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' } },
 ]);
 rbac.addRole('editor', [
-    { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' }}
+    { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' } }
 ]);
 rbac.addRole('publisher', [
     { action: 'publish', resource: 'article', condition: true },
-    { action: 'unpublish', resource: 'article', condition: { property: 'published', operator: 'eq', value: true, type: 'LiteralExpression' }}
+    { action: 'unpublish', resource: 'article', condition: { property: 'published', operator: 'eq', value: true, type: 'LiteralExpression' } }
 ]);
 rbac.addRole('compliance_officer', [
     { action: 'edit', resource: 'article', condition: true },

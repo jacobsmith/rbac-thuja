@@ -1,5 +1,7 @@
 import type { Context, Bool, BitVecNum, BitVec } from "z3-solver";
 import type { Encodable, RbacAction, RbacBooleanContextExpression, RbacBooleanExpression, RbacCondition } from "./encoder";
+import type { resourceToZ3Mapping } from "./resourceToZ3Mapping";
+import type { contextToZ3Mapping } from "./contextToZ3Mapping";
 
 export class EncodableToZ3<T> {
     private encodable: Encodable<T>;
@@ -12,7 +14,7 @@ export class EncodableToZ3<T> {
         this.roleSet = this.z3Context.BitVec.const('roleSet', this.encodable.getRoleBitVectors().length);
     }
 
-    public getEncodedConditions(published: Bool) {
+    public getEncodedConditions(resource: resourceToZ3Mapping, context: contextToZ3Mapping) {
         const roles = this.encodable.roles.keys();
 
         const conditions = [];
@@ -24,39 +26,46 @@ export class EncodableToZ3<T> {
             }
 
             for (const condition of roleConditions) {
-                conditions.push(this.encodeCondition(condition.condition, published));
+                conditions.push(this.encodeCondition(condition.condition, resource, context));
             }
         }
 
         return conditions;
     }
 
-    public encodeCondition(condition: RbacCondition, published: Bool): Bool {
+    public encodeCondition(condition: RbacCondition, resource: resourceToZ3Mapping, context: contextToZ3Mapping): Bool {
         if (condition == true) {
             return this.z3Context.Bool.val(true);
         }
 
         switch (condition.type) {
             case 'LiteralExpression': {
-                return this.literalExpressionEncoder(condition, published);
+                return this.literalExpressionEncoder(condition, resource);
             }
             case 'ContextExpression': {
-                return this.contextExpressionEncoder(condition, published);
+                return this.contextExpressionEncoder(condition, resource, context);
             }
         }
     }
 
-    public literalExpressionEncoder (condition: RbacBooleanExpression, published: Bool) {
+    public literalExpressionEncoder (condition: RbacBooleanExpression, resource: resourceToZ3Mapping) {
         switch (condition.operator) {
             case 'eq': {
-                return published.eq(condition.value);
+                const resourceProperty = resource[condition.property];
+                if (!resourceProperty) { return this.z3Context.Bool.val(false); }
+                return resourceProperty.eq(condition.value);
             }
         }
     }
 
-    public contextExpressionEncoder(condition: RbacBooleanContextExpression, published: Bool): Bool {
-        // todo -- write this
-        return this.z3Context.Bool.val(false);
+    public contextExpressionEncoder(condition: RbacBooleanContextExpression, resource: resourceToZ3Mapping, context: contextToZ3Mapping): Bool {
+        switch (condition.operator) {
+            case 'eq': {
+                const resourceProperty = resource[condition.property];
+                const contextProperty = context[condition.contextProperty];
+                return resourceProperty.eq(contextProperty);
+            }
+        }
     }
 
     public holdsRole(mask: BitVecNum): Bool {
@@ -69,26 +78,26 @@ export class EncodableToZ3<T> {
     }
 
 
-    public roleCanDo(role: T, action: RbacAction, published: Bool): Bool {
+    public roleCanDo(role: T, action: RbacAction, resource: resourceToZ3Mapping, context: contextToZ3Mapping): Bool {
         const permissions = this.encodable.roles.get(role);
         if (!permissions) { return this.z3Context.Bool.val(false); }
 
         const conditions = permissions.filter((permission) => permission.action == action);
         const encodedConditions = conditions.map((condition) => {
-            return this.encodeCondition(condition.condition, published);
+            return this.encodeCondition(condition.condition, resource, context);
         });
 
         return this.z3Context.Or(...encodedConditions);
     }
 
-    public anyRoleCanDo(action: RbacAction, published: Bool): Bool {
+    public anyRoleCanDo(action: RbacAction, resource: resourceToZ3Mapping, context: contextToZ3Mapping): Bool {
         const roleBitVectors = this.encodable.getRoleBitVectors();
 
         const perRole = roleBitVectors.map((rbv) => {
             const mask = this.vectorToMask(rbv.vector);
             return this.z3Context.And(
                 this.holdsRole(mask),
-                this.roleCanDo(rbv.name, action, published)
+                this.roleCanDo(rbv.name, action, resource, context)
             );
         });
 

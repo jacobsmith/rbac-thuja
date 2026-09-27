@@ -1,9 +1,10 @@
 export type userId = string;
-export type Resource = { name: 'article', published: boolean }
+export type Resource = { name: 'article', published: boolean, authorId?: string }
 export type RbacAction = 'create'| 'edit'| 'publish'| 'unpublish';
 export type RbacContext = { id: string }
-export type RbacBooleanContextExpression = { property: keyof Resource, operator: 'eq', contextProperty: keyof RbacContext, type: 'ContextExpression' }
-export type RbacBooleanExpression = { property: keyof Resource, operator: 'eq', value: true | false, type: 'LiteralExpression' }
+export type ResourceProperties = Extract<keyof Resource, 'published' | 'authorId'>
+export type RbacBooleanContextExpression = { property: ResourceProperties, operator: 'eq', contextProperty: keyof RbacContext, type: 'ContextExpression' }
+export type RbacBooleanExpression = { property: ResourceProperties, operator: 'eq', value: true | false, type: 'LiteralExpression' }
 export type RbacCondition = true | RbacBooleanExpression | RbacBooleanContextExpression
 export type RbacPermission = { action: RbacAction, resource: Resource['name'], condition: RbacCondition };
 export type RbacPermissions = Array<RbacPermission>;

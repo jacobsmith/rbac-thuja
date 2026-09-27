@@ -127,4 +127,21 @@ describe('roles', () => {
 
         console.log(rbac.getRoleBitVectors());
     });
+
+    it('restricts editing to the resource author via a context expression', () => {
+        type CMSRole = 'writer';
+
+        const rbac = new CmsRbac<CMSRole>();
+        rbac.addRole('writer', [
+            { action: 'edit', resource: 'article', condition: { property: 'authorId', operator: 'eq', contextProperty: 'id', type: 'ContextExpression' } }
+        ]);
+
+        rbac.assignRole('alice', 'writer');
+
+        const ownArticle = { name: 'article' as const, published: true, authorId: 'alice' };
+        const othersArticle = { name: 'article' as const, published: true, authorId: 'bob' };
+
+        expect(rbac.can('alice', 'edit', ownArticle, { id: 'alice' })).toEqual(true);
+        expect(rbac.can('alice', 'edit', othersArticle, { id: 'alice' })).toEqual(false);
+    });
 });
