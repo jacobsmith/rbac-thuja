@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { cmsSchema, createCmsPolicy } from './examples/cms.js';
-import { ImmutableRolesError } from './errors.js';
+import { cmsPermissions, cmsSchema, createCmsPolicy } from './examples/cms.js';
 import { Policy } from './policy.js';
-import { defineSchema } from './schema.js';
+import { defineSchema, type PolicySchema } from './schema.js';
 
 describe('roles', () => {
     it('default to false', () => {
@@ -49,18 +48,12 @@ describe('roles', () => {
         ]);
     });
 
-    it('refuses new roles once bit vectors have been handed out', () => {
-        const policy = createCmsPolicy();
-        policy.getRoleBitVectors();
-
-        expect(() => policy.addRole('writer', [])).toThrow(ImmutableRolesError);
-    });
-
     it('restricts editing to the resource author via a context expression', () => {
-        const policy = new Policy(cmsSchema);
-        policy.addRole('writer', [
+        const policy = new Policy(cmsSchema, {
+            writer: [
             { action: 'edit', resource: 'article', condition: { property: 'authorId', operator: 'eq', contextProperty: 'id', type: 'ContextExpression' } }
-        ]);
+        ],
+        });
         policy.assignRole('alice', 'writer');
 
         const ownArticle = { $type: 'article' as const, published: true, authorId: 'alice' };
@@ -71,10 +64,11 @@ describe('roles', () => {
     });
 
     it('fails closed when a compared attribute is missing on both sides', () => {
-        const policy = new Policy(cmsSchema);
-        policy.addRole('writer', [
+        const policy = new Policy(cmsSchema, {
+            writer: [
             { action: 'edit', resource: 'article', condition: { property: 'authorId', operator: 'eq', contextProperty: 'id', type: 'ContextExpression' } }
-        ]);
+        ],
+        });
         policy.assignRole('alice', 'writer');
 
         // undefined == undefined must not count as "is the author"
@@ -90,10 +84,11 @@ describe('roles', () => {
             },
             context: {},
         });
-        const policy = new Policy(schema);
-        policy.addRole('moderator', [
+        const policy = new Policy(schema, {
+            moderator: [
             { action: 'edit', resource: 'comment', condition: { property: 'locked', operator: 'eq', value: false, type: 'LiteralExpression' } },
-        ]);
+        ],
+        });
         policy.assignRole('mo', 'moderator');
 
         expect(policy.can('mo', 'edit', { $type: 'comment', locked: false })).toEqual(true);
@@ -106,10 +101,11 @@ describe('roles', () => {
             resources: { article: { status: 'string' } },
             context: {},
         });
-        const policy = new Policy(schema);
-        policy.addRole('writer', [
+        const policy = new Policy(schema, {
+            writer: [
             { action: 'edit', resource: 'article', condition: { property: 'status', operator: 'eq', value: 'draft', type: 'LiteralExpression' } },
-        ]);
+        ],
+        });
         policy.assignRole('alice', 'writer');
 
         expect(policy.can('alice', 'edit', { $type: 'article', status: 'draft' })).toEqual(true);
@@ -119,8 +115,8 @@ describe('roles', () => {
 
 describe('compound conditions', () => {
     it('grants editing your own drafts, or anything as a reviewer', () => {
-        const policy = new Policy(cmsSchema);
-        policy.addRole('writer', [{
+        const policy = new Policy(cmsSchema, {
+            writer: [{
             action: 'edit', resource: 'article', condition: {
                 type: 'Or', conditions: [
                     { type: 'And', conditions: [
@@ -130,12 +126,13 @@ describe('compound conditions', () => {
                     { type: 'Not', condition: { type: 'LiteralExpression', property: 'published', operator: 'eq', value: true } },
                 ],
             },
-        }]);
-        policy.addRole('editor', [{
+        }],
+            editor: [{
             action: 'edit', resource: 'article', condition: {
                 type: 'Not', condition: { type: 'ContextExpression', property: 'authorId', operator: 'eq', contextProperty: 'id' },
             },
-        }]);
+        }],
+        });
         policy.assignRole('alice', 'writer');
         policy.assignRole('erin', 'editor');
 
@@ -148,8 +145,7 @@ describe('compound conditions', () => {
     });
 
     it('validates nested conditions at runtime', () => {
-        const policy = new Policy(cmsSchema);
-        const addUntyped = (condition: unknown) => policy.addRole('writer', [{ action: 'edit', resource: 'article', condition } as never]);
+        const addUntyped = (condition: unknown) => new Policy(cmsSchema, { writer: [{ action: 'edit', resource: 'article', condition } as never] });
 
         expect(() => addUntyped({ type: 'And', conditions: [{ type: 'Not', condition: { type: 'LiteralExpression', property: 'nope', operator: 'eq', value: true } }] }))
             .toThrow(/unknown attribute "nope"/);
@@ -182,30 +178,40 @@ describe('validation', () => {
         ] })).toThrow(/invariant "dup" more than once/);
     });
 
+    it('builds from a schema and permissions loaded as data, e.g. from a database', () => {
+        // JSON round trip: nothing about a policy depends on code
+        const schema = JSON.parse(JSON.stringify(cmsSchema)) as PolicySchema;
+        const permissions = JSON.parse(JSON.stringify(cmsPermissions));
+
+        const policy = new Policy(schema, permissions);
+        policy.assignRole('alice', 'writer');
+
+        expect(policy.can('alice', 'edit', { $type: 'article', published: false })).toBe(true);
+        expect(policy.can('alice', 'edit', { $type: 'article', published: true })).toBe(false);
+        expect(() => new Policy(schema, { ...permissions, admin: [] })).toThrow(/Unknown role "admin"/);
+    });
+
     it('rejects duplicate declared roles', () => {
         expect(() => defineSchema({ roles: ['writer', 'writer'], actions: [], resources: {}, context: {} }))
             .toThrow(/duplicate roles/);
     });
 
     it('rejects roles the schema does not declare at runtime', () => {
-        const policy = new Policy(cmsSchema);
         const untypedRole = 'wirter' as never;
 
-        expect(() => policy.addRole(untypedRole, [])).toThrow(/Unknown role "wirter"/);
-        expect(() => policy.assignRole('alice', untypedRole)).toThrow(/Unknown role "wirter"/);
+        expect(() => new Policy(cmsSchema, { [untypedRole]: [] })).toThrow(/Unknown role "wirter"/);
+        expect(() => new Policy(cmsSchema).assignRole('alice', untypedRole)).toThrow(/Unknown role "wirter"/);
     });
 
     it('accepts any role when the schema declares none', () => {
         const schema = defineSchema({ actions: ['edit'], resources: { article: {} }, context: {} });
-        const policy = new Policy(schema);
         const roleFromDatabase: string = 'whatever';
 
-        expect(() => policy.addRole(roleFromDatabase, [{ action: 'edit', resource: 'article', condition: true }])).not.toThrow();
+        expect(() => new Policy(schema, { [roleFromDatabase]: [{ action: 'edit', resource: 'article', condition: true }] })).not.toThrow();
     });
 
     it('rejects permissions that do not match the schema at runtime', () => {
-        const policy = new Policy(cmsSchema);
-        const addUntyped = (permission: unknown) => policy.addRole('writer', [permission as never]);
+        const addUntyped = (permission: unknown) => new Policy(cmsSchema, { writer: [permission as never] });
 
         expect(() => addUntyped({ action: 'delete', resource: 'article', condition: true })).toThrow(/unknown action/);
         expect(() => addUntyped({ action: 'edit', resource: 'page', condition: true })).toThrow(/unknown resource/);

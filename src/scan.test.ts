@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cmsSchema, createCmsPolicy } from './examples/cms.js';
+import { cmsPermissions, cmsSchema, createCmsPolicy } from './examples/cms.js';
 import { Policy } from './policy.js';
 import { defineSchema } from './schema.js';
 import { inferRules, permissionsFingerprint, scanPolicy } from './scan.js';
@@ -27,13 +27,14 @@ describe('findBypasses', () => {
     });
 
     it('flags only the unusual role, not the roles following the common rule', async () => {
-        const policy = new Policy(cmsSchema);
         const unpublishedOnly = { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' } as const;
-        policy.addRole('writer', [{ action: 'edit', resource: 'article', condition: unpublishedOnly }]);
-        policy.addRole('editor', [{ action: 'edit', resource: 'article', condition: unpublishedOnly }]);
-        policy.addRole('publisher', [
-            { action: 'edit', resource: 'article', condition: { property: 'authorId', operator: 'eq', contextProperty: 'id', type: 'ContextExpression' } },
-        ]);
+        const policy = new Policy(cmsSchema, {
+            writer: [{ action: 'edit', resource: 'article', condition: unpublishedOnly }],
+            editor: [{ action: 'edit', resource: 'article', condition: unpublishedOnly }],
+            publisher: [
+                { action: 'edit', resource: 'article', condition: { property: 'authorId', operator: 'eq', contextProperty: 'id', type: 'ContextExpression' } },
+            ],
+        });
 
         const ids = (await policy.findBypasses()).map((finding) => finding.id);
 
@@ -43,25 +44,27 @@ describe('findBypasses', () => {
     });
 
     it('has no rule for an action most roles may do unconditionally', async () => {
-        const policy = new Policy(cmsSchema);
-        policy.addRole('writer', [{ action: 'create', resource: 'article', condition: true }]);
-        policy.addRole('editor', [{ action: 'create', resource: 'article', condition: true }]);
-        policy.addRole('publisher', [
+        const policy = new Policy(cmsSchema, {
+            writer: [{ action: 'create', resource: 'article', condition: true }],
+            editor: [{ action: 'create', resource: 'article', condition: true }],
+            publisher: [
             { action: 'create', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' } },
-        ]);
+        ],
+        });
 
         expect((await inferRules(policy)).size).toEqual(0);
         expect(await policy.findBypasses()).toEqual([]);
     });
 
     it('flags both sides of a tie, since neither is clearly the unusual one', async () => {
-        const policy = new Policy(cmsSchema);
-        policy.addRole('writer', [
+        const policy = new Policy(cmsSchema, {
+            writer: [
             { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: true, type: 'LiteralExpression' } },
-        ]);
-        policy.addRole('editor', [
+        ],
+            editor: [
             { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' } },
-        ]);
+        ],
+        });
 
         const ids = (await policy.findBypasses()).map((finding) => finding.id);
 
@@ -73,27 +76,28 @@ describe('findBypasses', () => {
     });
 
     it('flags ownership bypasses through context expressions', async () => {
-        const policy = new Policy(cmsSchema);
-        policy.addRole('writer', [
+        const policy = new Policy(cmsSchema, {
+            writer: [
             { action: 'edit', resource: 'article', condition: { property: 'authorId', operator: 'eq', contextProperty: 'id', type: 'ContextExpression' } },
-        ]);
-        policy.addRole('compliance_officer', [
+        ],
+            compliance_officer: [
             { action: 'edit', resource: 'article', condition: true },
-        ]);
+        ],
+        });
 
         const ids = (await policy.findBypasses()).map((finding) => finding.id);
 
         expect(ids).toEqual(['compliance_officer|edit|article|inferred:authorId==context.id']);
     });
 
-    it('reports nothing for a consistent policy and does not lock its roles', async () => {
-        const policy = new Policy(cmsSchema);
-        policy.addRole('writer', [
+    it('reports nothing for a consistent policy', async () => {
+        const policy = new Policy(cmsSchema, {
+            writer: [
             { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' } },
-        ]);
+        ],
+        });
 
         expect(await policy.findBypasses()).toEqual([]);
-        expect(() => policy.addRole('editor', [])).not.toThrow();
     });
 });
 
@@ -105,11 +109,7 @@ describe('findBypasses with compound conditions', () => {
     type Role = 'writer' | 'editor' | 'publisher' | 'compliance_officer';
 
     function policyWith(roles: Partial<Record<Role, Array<unknown>>>) {
-        const policy = new Policy(cmsSchema);
-        for (const [role, permissions] of Object.entries(roles)) {
-            policy.addRole(role as Role, permissions as never);
-        }
-        return policy;
+        return new Policy(cmsSchema, roles as never);
     }
     const edit = (condition: unknown) => ({ action: 'edit', resource: 'article', condition });
     const ids = async (policy: ReturnType<typeof policyWith>) => (await policy.findBypasses()).map((finding) => finding.id);
@@ -200,11 +200,7 @@ describe('declared invariants', () => {
     const base = { ...cmsSchema };
     const edit = (condition: unknown) => ({ action: 'edit', resource: 'article', condition }) as never;
     const scan = async (invariants: Array<unknown>, roles: Record<string, Array<never>>) => {
-        const policy = new Policy(defineSchema({ ...base, invariants: invariants as never }));
-        for (const [role, permissions] of Object.entries(roles)) {
-            policy.addRole(role as never, permissions);
-        }
-        return scanPolicy(policy);
+        return scanPolicy(new Policy(defineSchema({ ...base, invariants: invariants as never }), roles as never));
     };
     const ids = async (...args: Parameters<typeof scan>) => (await scan(...args)).findings.map((finding) => [finding.kind, finding.id]);
 
@@ -328,17 +324,15 @@ describe('permissionsFingerprint', () => {
         const base = createCmsPolicy();
         const fingerprint = permissionsFingerprint(base, 'compliance_officer', 'edit', 'article');
 
-        const withUnrelatedChange = createCmsPolicy();
-        withUnrelatedChange.addRole('compliance_officer', [
+        const withUnrelatedChange = new Policy(cmsSchema, { ...cmsPermissions, compliance_officer: [
             { action: 'edit', resource: 'article', condition: true },
             { action: 'create', resource: 'article', condition: true },
-        ]);
+        ] });
         expect(permissionsFingerprint(withUnrelatedChange, 'compliance_officer', 'edit', 'article')).toEqual(fingerprint);
 
-        const withRelevantChange = createCmsPolicy();
-        withRelevantChange.addRole('compliance_officer', [
+        const withRelevantChange = new Policy(cmsSchema, { ...cmsPermissions, compliance_officer: [
             { action: 'edit', resource: 'article', condition: { property: 'authorId', operator: 'eq', contextProperty: 'id', type: 'ContextExpression' } },
-        ]);
+        ] });
         expect(permissionsFingerprint(withRelevantChange, 'compliance_officer', 'edit', 'article')).not.toEqual(fingerprint);
     });
 });

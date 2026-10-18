@@ -3,7 +3,7 @@
 // Everything compiles to the plain condition objects the rest of Thuja uses.
 
 import { conditionKey } from "./conditions.js";
-import { Policy } from "./policy.js";
+import { Policy, type PermissionsByRole } from "./policy.js";
 import type {
     Action,
     AnyCondition,
@@ -91,13 +91,19 @@ export type PolicyDefinition<S extends PolicySchema> = {
  * ```
  */
 export function definePolicy<S extends PolicySchema>(schema: S, define: (definition: PolicyDefinition<S>) => void): Policy<S> {
-    const permissionsByRole = new Map<string, Array<AnyPermission>>();
+    const permissionsByRole: Record<string, Array<AnyPermission>> = {};
+    const granted = new Set<string>();
     const ctx = contextRefs(schema);
 
     const grant = (role: string, action: string, resource: string, input: unknown) => {
-        const permissions = permissionsByRole.get(role) ?? [];
-        permissions.push({ action, resource, condition: compile(input, resource, `${role} ${action} ${resource}`) });
-        permissionsByRole.set(role, permissions);
+        // One grant per role/action/resource: a second one would silently widen the first
+        // (permissions are a union), so combining has to be explicit with any(...).
+        const key = `${role}|${action}|${resource}`;
+        if (granted.has(key)) {
+            throw new Error(`"${role}" is granted ${action} on ${resource} more than once; combine the conditions with any(...) in a single grant.`);
+        }
+        granted.add(key);
+        (permissionsByRole[role] ??= []).push({ action, resource, condition: compile(input, resource, `${role} ${action} ${resource}`) });
     };
 
     const resource = (name: string, body?: (resource: never, operators: never) => void) => {
@@ -125,11 +131,15 @@ export function definePolicy<S extends PolicySchema>(schema: S, define: (definit
 
     define({ resource, ctx } as unknown as PolicyDefinition<S>);
 
-    const policy = new Policy(schema);
-    for (const [role, permissions] of permissionsByRole) {
-        policy.addRole(role as RoleName<S>, permissions as never);
-    }
-    return policy;
+    return new Policy(schema, permissionsByRole as PermissionsByRole<S>);
+}
+
+/**
+ * The schema's context references, for defining shared conditions outside definePolicy:
+ * `const ctx = contextOf(schema); const owned = { authorId: ctx.id };`
+ */
+export function contextOf<S extends PolicySchema>(schema: S): ContextRefs<S> {
+    return contextRefs(schema) as unknown as ContextRefs<S>;
 }
 
 function contextRefs(schema: PolicySchema): Record<string, ContextRef> {

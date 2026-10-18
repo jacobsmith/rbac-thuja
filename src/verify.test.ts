@@ -51,16 +51,18 @@ describe('verifyNoUnapprovedBypasses', () => {
     });
 
     it('passes for a consistent policy with no exceptions file', async () => {
-        const policy = new Policy(defineSchema({ ...cmsSchema, roles: ['writer'] }));
-        policy.addRole('writer', [{ action: 'create', resource: 'article', condition: true }]);
+        const policy = new Policy(defineSchema({ ...cmsSchema, roles: ['writer'] }), {
+            writer: [{ action: 'create', resource: 'article', condition: true }],
+        });
 
         await expect(policy.verifyNoUnapprovedBypasses({ exceptionsFile, update: false })).resolves.toBeDefined();
     });
 
     it('fails on declared roles with no permissions', async () => {
-        const policy = new Policy(cmsSchema);
-        policy.addRole('writer', [{ action: 'create', resource: 'article', condition: true }]);
-        policy.addRole('editor', []);
+        const policy = new Policy(cmsSchema, {
+            writer: [{ action: 'create', resource: 'article', condition: true }],
+            editor: [],
+        });
 
         expect(await problemsOf(policy.verifyNoUnapprovedBypasses({ exceptionsFile, update: false }))).toEqual([
             ['unused-role', 'compliance_officer'],
@@ -73,8 +75,9 @@ describe('verifyNoUnapprovedBypasses', () => {
 
     it('does not check unused roles when the schema declares none', async () => {
         const { roles: _roles, ...undeclared } = cmsSchema;
-        const policy = new Policy(defineSchema(undeclared));
-        policy.addRole('writer', [{ action: 'create', resource: 'article', condition: true }]);
+        const policy = new Policy(defineSchema(undeclared), {
+            writer: [{ action: 'create', resource: 'article', condition: true }],
+        });
 
         await expect(policy.verifyNoUnapprovedBypasses({ exceptionsFile, update: false })).resolves.toBeDefined();
     });
@@ -131,10 +134,11 @@ describe('verifyNoUnapprovedBypasses', () => {
         const owner = { type: 'ContextExpression', property: 'authorId', operator: 'eq', contextProperty: 'id' } as const;
 
         function governed(invariants: Array<unknown>) {
-            const policy = new Policy(defineSchema({ ...cmsSchema, roles: ['writer', 'editor', 'publisher'], invariants: invariants as never }));
-            policy.addRole('writer', [{ action: 'edit', resource: 'article', condition: { type: 'And', conditions: [unpublished, owner] } }]);
-            policy.addRole('editor', [{ action: 'edit', resource: 'article', condition: { type: 'And', conditions: [unpublished, owner] } }]);
-            policy.addRole('publisher', [{ action: 'edit', resource: 'article', condition: true }, { action: 'publish', resource: 'article', condition: true }]);
+            const policy = new Policy(defineSchema({ ...cmsSchema, roles: ['writer', 'editor', 'publisher'], invariants: invariants as never }), {
+                writer: [{ action: 'edit', resource: 'article', condition: { type: 'And', conditions: [unpublished, owner] } }],
+                editor: [{ action: 'edit', resource: 'article', condition: { type: 'And', conditions: [unpublished, owner] } }],
+                publisher: [{ action: 'edit', resource: 'article', condition: true }, { action: 'publish', resource: 'article', condition: true }],
+            });
             return policy;
         }
 

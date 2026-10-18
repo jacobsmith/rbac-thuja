@@ -1,10 +1,3 @@
-export class ImmutableRolesError extends Error {
-    constructor() {
-        super("Roles have already been accessed for validation; additional Roles cannot be assigned within this Policy instance.");
-        this.name = this.constructor.name;
-    }
-}
-
 import type { FindingKind } from "./scan.js";
 
 export type VerificationProblemKind = 'unapproved' | 'changed' | 'incomplete' | 'expired' | 'stale' | 'unused-role' | 'vacuous-invariant';

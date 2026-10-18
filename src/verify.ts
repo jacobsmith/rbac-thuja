@@ -138,7 +138,7 @@ export function checkUnusedRoles(policy: EncodablePolicy): Array<VerificationPro
         .map((role) => ({
             kind: 'unused-role' as const,
             id: role,
-            message: `Declared in the schema but has no permissions; give it some with addRole() or remove it from roles.`,
+            message: `Declared in the schema but has no permissions; give it some permissions or remove it from roles.`,
         }));
 }
 

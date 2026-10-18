@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { conditionKey } from './conditions.js';
-import { definePolicy, describeRole } from './dsl.js';
+import { contextOf, definePolicy, describeRole } from './dsl.js';
 import { cmsSchema, createCmsPolicy, createGovernedCmsPolicy } from './examples/cms.js';
 import { createCmsPolicyByResource, createCmsPolicyChained, createGovernedCmsPolicyByResource } from './examples/cmsResources.js';
 import type { Policy } from './policy.js';
@@ -75,6 +75,33 @@ describe('definePolicy (resource-centric)', () => {
             'edit article when published==false',
             'publish article when published==false',
         ]);
+    });
+
+    it('throws on a second grant for the same role, action and resource', () => {
+        expect(() => definePolicy(cmsSchema, ({ resource }) => {
+            resource('article', (article) => article.edit({ writer: { published: false } }));
+            resource('article', (article) => article.edit({ writer: true })); // would silently widen the first
+        })).toThrow(/"writer" is granted edit on article more than once; combine the conditions with any/);
+
+        expect(() => definePolicy(cmsSchema, ({ resource }) => {
+            resource('article').can('edit', ['writer', 'editor'], { published: false }).can('edit', ['editor']);
+        })).toThrow(/"editor" is granted edit on article more than once/);
+    });
+
+    it('supports shared conditions defined outside the policy, including context references', () => {
+        const ctx = contextOf(cmsSchema);
+        const draft = { published: false };
+        const ownDraft = { ...draft, authorId: ctx.id };
+
+        const policy = definePolicy(cmsSchema, ({ resource }) => {
+            resource('article', (article, { any }) => {
+                article.edit({ writer: ownDraft, editor: draft, publisher: any(ownDraft, { published: true }) });
+            });
+        });
+
+        expect(describeRole(policy, 'writer')).toEqual(['edit article when (authorId==context.id && published==false)']);
+        expect(describeRole(policy, 'editor')).toEqual(['edit article when published==false']);
+        expect(describeRole(policy, 'publisher')).toEqual(['edit article when ((authorId==context.id && published==false) || published==true)']);
     });
 
     it('rejects mistakes the types would catch, for JavaScript consumers', () => {

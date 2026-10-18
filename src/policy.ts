@@ -1,5 +1,4 @@
 import { evaluateCondition, validatePermission } from "./conditions.js";
-import { ImmutableRolesError } from "./errors.js";
 import { validateSchema, type Action, type AnyPermission, type ContextValue, type Permission, type PolicySchema, type ResourceValue, type RoleName } from "./schema.js";
 // Type-only: the scan/verify modules (and Z3 behind them) are loaded on demand so
 // apps that only call `can()` never pay for them.
@@ -20,26 +19,33 @@ export class RbacBitVector<Role> {
     }
 }
 
+/**
+ * Each role's permissions, as plain data. This is Thuja's raw format: `definePolicy` compiles
+ * to it, and anything else (another DSL, a database, a config file) can produce it too.
+ * Several permissions for the same role/action/resource mean any of them grants.
+ */
+export type PermissionsByRole<S extends PolicySchema> = {
+    readonly [Role in RoleName<S>]?: ReadonlyArray<Permission<S>>
+};
+
 export class Policy<S extends PolicySchema> {
     public readonly schema: S;
-    private rolePermissions: Map<RoleName<S>, Array<AnyPermission>> = new Map();
+    private rolePermissions: Map<RoleName<S>, ReadonlyArray<AnyPermission>> = new Map();
     private userRoles: Map<UserId, Array<RoleName<S>>> = new Map();
-    private roleBitVectorsAccessed = false;
 
-    constructor(schema: S) {
+    /** Roles and their permissions are fixed once the policy is built. */
+    constructor(schema: S, permissions: PermissionsByRole<S> = {}) {
         validateSchema(schema);
         this.schema = schema;
-    }
 
-    addRole(role: RoleName<S>, permissions: Array<Permission<S>>) {
-        if (this.roleBitVectorsAccessed) {
-            throw new ImmutableRolesError();
+        for (const [role, rolePermissions] of Object.entries(permissions) as Array<[RoleName<S>, ReadonlyArray<AnyPermission> | undefined]>) {
+            if (rolePermissions === undefined) {
+                continue;
+            }
+            this.assertDeclaredRole(role);
+            rolePermissions.forEach((permission) => validatePermission(this.schema, role, permission));
+            this.rolePermissions.set(role, [...rolePermissions]);
         }
-        this.assertDeclaredRole(role);
-        // Permission<S> is a mapped type TS can't relate to AnyPermission while S is generic.
-        const anyPermissions = permissions as unknown as Array<AnyPermission>;
-        anyPermissions.forEach((permission) => validatePermission(this.schema, role, permission));
-        this.rolePermissions.set(role, anyPermissions);
     }
 
     assignRole(user: UserId, role: RoleName<S>) {
@@ -85,7 +91,6 @@ export class Policy<S extends PolicySchema> {
 
     getRoleBitVectors(): Array<RbacBitVector<RoleName<S>>> {
         const roles = this.getRoles();
-        this.roleBitVectorsAccessed = true;
 
         return roles.map((role, i) => new RbacBitVector<RoleName<S>>(role, roles.length, i));
     }

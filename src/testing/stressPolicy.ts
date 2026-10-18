@@ -181,11 +181,7 @@ export function generateCompoundPermissions(seed = 20261019): { permissionsByRol
 }
 
 export function buildPolicy(permissionsByRole: PermissionsByRole, policySchema: PolicySchema = schema) {
-    const policy = new Policy(policySchema);
-    for (const [role, permissions] of permissionsByRole) {
-        policy.addRole(role, permissions as never);
-    }
-    return policy;
+    return new Policy(policySchema, Object.fromEntries(permissionsByRole) as never);
 }
 
 export function countPermissions(permissionsByRole: PermissionsByRole) {

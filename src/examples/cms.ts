@@ -1,4 +1,4 @@
-import { Policy } from "../policy.js";
+import { Policy, type PermissionsByRole } from "../policy.js";
 import { defineSchema, type RoleName } from "../schema.js";
 
 export const cmsSchema = defineSchema({
@@ -12,24 +12,28 @@ export const cmsSchema = defineSchema({
 
 export type CMSRole = RoleName<typeof cmsSchema>;
 
-export function createCmsPolicy() {
-    const policy = new Policy(cmsSchema);
-    policy.addRole('writer', [
+// The raw data form: what definePolicy (see cmsResources.ts) compiles to, and what a
+// database, config file or another DSL could produce directly.
+export const cmsPermissions: PermissionsByRole<typeof cmsSchema> = {
+    writer: [
         { action: 'create', resource: 'article', condition: true },
         { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' } },
-    ]);
-    policy.addRole('editor', [
+    ],
+    editor: [
         { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' } },
-    ]);
-    policy.addRole('publisher', [
+    ],
+    publisher: [
         { action: 'publish', resource: 'article', condition: true },
         { action: 'unpublish', resource: 'article', condition: { property: 'published', operator: 'eq', value: true, type: 'LiteralExpression' } },
-    ]);
+    ],
     // Deliberate bypass: edits regardless of publication state.
-    policy.addRole('compliance_officer', [
+    compliance_officer: [
         { action: 'edit', resource: 'article', condition: true },
-    ]);
-    return policy;
+    ],
+};
+
+export function createCmsPolicy() {
+    return new Policy(cmsSchema, cmsPermissions);
 }
 
 // The same CMS with its rules declared up front: Thuja enforces these instead of
@@ -53,10 +57,5 @@ export const governedCmsSchema = defineSchema({
 });
 
 export function createGovernedCmsPolicy() {
-    const policy = new Policy(governedCmsSchema);
-    const plain = createCmsPolicy();
-    for (const role of plain.getRoles()) {
-        policy.addRole(role, plain.getPermissions(role) as never);
-    }
-    return policy;
+    return new Policy(governedCmsSchema, cmsPermissions);
 }
