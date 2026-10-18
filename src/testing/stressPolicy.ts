@@ -2,7 +2,7 @@
 
 import { conditionKey, evaluateCondition, normalizeCondition } from '../conditions.js';
 import { Policy } from '../policy.js';
-import { defineSchema, type AnyCondition, type AnyPermission } from '../schema.js';
+import { defineSchema, type AnyCondition, type AnyPermission, type Attributes, type PolicySchema } from '../schema.js';
 
 // 50 roles: 10 departments x 5 levels.
 const DEPARTMENTS = ['editorial', 'finance', 'legal', 'sales', 'support', 'engineering', 'marketing', 'hr', 'compliance', 'ops'];
@@ -180,8 +180,8 @@ export function generateCompoundPermissions(seed = 20261019): { permissionsByRol
     return { permissionsByRole, variants, houseRules };
 }
 
-export function buildPolicy(permissionsByRole: PermissionsByRole) {
-    const policy = new Policy(schema);
+export function buildPolicy(permissionsByRole: PermissionsByRole, policySchema: PolicySchema = schema) {
+    const policy = new Policy(policySchema);
     for (const [role, permissions] of permissionsByRole) {
         policy.addRole(role, permissions as never);
     }
@@ -202,12 +202,12 @@ export function countPermissions(permissionsByRole: PermissionsByRole) {
  * fresh values suffice. With every assignment enumerated, two conditions are equivalent
  * exactly when their truth tables match.
  */
-export function bruteForceFindings(permissionsByRole: PermissionsByRole): Set<string> {
+export function bruteForceFindings(permissionsByRole: PermissionsByRole, policySchema: PolicySchema = schema): Set<string> {
     const findings = new Set<string>();
-    const { truthTable } = enumerator(permissionsByRole);
+    const { truthTable } = enumerator(permissionsByRole, policySchema);
 
-    for (const resource of Object.keys(schema.resources)) {
-        for (const action of schema.actions) {
+    for (const resource of Object.keys(policySchema.resources)) {
+        for (const action of policySchema.actions) {
             // each role's effective condition: the Or of its permissions here
             const roleRules = new Map<string, { key: string, table: string }>();
             for (const [role, permissions] of permissionsByRole) {
@@ -248,7 +248,7 @@ export function bruteForceFindings(permissionsByRole: PermissionsByRole): Set<st
 }
 
 /** Truth tables over every concrete assignment for a resource (see bruteForceFindings). */
-export function enumerator(permissionsByRole: PermissionsByRole) {
+export function enumerator(permissionsByRole: PermissionsByRole, policySchema: PolicySchema = schema) {
     const all = [...permissionsByRole.values()].flat();
     const literals = new Set<string>();
     const collect = (condition: AnyCondition) => {
@@ -263,7 +263,7 @@ export function enumerator(permissionsByRole: PermissionsByRole) {
     all.forEach((permission) => collect(permission.condition));
     const stringDomain = ['v1', 'v2', ...literals];
 
-    const assignments = (attributes: Record<string, string>): Array<Record<string, boolean | string>> =>
+    const assignments = (attributes: Attributes): Array<Record<string, boolean | string>> =>
         Object.entries(attributes).reduce<Array<Record<string, boolean | string>>>(
             (partials, [name, type]) => partials.flatMap((partial) =>
                 (type === 'boolean' ? [true, false] : stringDomain).map((value) => ({ ...partial, [name]: value }))),
@@ -274,9 +274,9 @@ export function enumerator(permissionsByRole: PermissionsByRole) {
     const worldsFor = (resource: string) => {
         let worlds = worldsByResource.get(resource);
         if (!worlds) {
-            const attributes = (schema.resources as Record<string, Record<string, string>>)[resource]!;
+            const attributes = policySchema.resources[resource]!;
             worlds = assignments(attributes).flatMap((resourceValue) =>
-                assignments(schema.context).map((contextValue) => ({ resourceValue, contextValue })));
+                assignments(policySchema.context).map((contextValue) => ({ resourceValue, contextValue })));
             worldsByResource.set(resource, worlds);
         }
         return worlds;

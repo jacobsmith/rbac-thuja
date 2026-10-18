@@ -165,32 +165,34 @@ real approval gate. The file records the decision; code review enforces it.
 - [ ] **Declared invariants** (optional `invariants` option) on top of the
       inferred ones, to catch rules no role encodes yet.
 
-## Compound conditions (AND / OR / NOT)
+## Compound conditions (AND / OR / NOT) — done
 
-`RbacCondition` can currently only be `true` or a single atomic comparison
-(`RbacBooleanExpression` / `RbacBooleanContextExpression`). Real policies need
-to combine checks — e.g. "published == false AND authorId == id" — which isn't
-expressible today. This is the gap most likely to be hit first when writing an
-actual policy, ahead of any new data type.
+`Condition` is now recursive (`{ type: 'And' | 'Or', conditions }`,
+`{ type: 'Not', condition }`), typed against the schema at every level.
+Decisions made while building it:
 
-Inspired by looking at what [Cedar](https://docs.cedarpolicy.com/policies/syntax-operators.html)
-supports (`&&`, `||`, `!` inside `when`/`unless` clauses).
+- **Fail-closed under `Not`:** runtime evaluation uses three-valued (Kleene)
+  logic, where a comparison on a missing attribute is *unknown*, and only a
+  definite `true` grants. Without this, `Not(published == true)` would grant
+  on a resource with no `published`.
+- **Identity:** `conditionKey` normalizes (flatten, sort, dedupe, double
+  negation, constant absorption). Atomic keys are unchanged, so existing
+  exceptions files stay valid. The normalizer doesn't apply De Morgan;
+  semantic equivalence is Z3's job.
+- **Inference votes per role:** each role's effective condition for an
+  action/resource (the Or of its permissions there) is one vote. Votes for
+  logically equivalent conditions are merged with Z3; a 64-sample
+  truth-table signature avoids most pairwise queries. Ties name the rule
+  after the shortest spelling.
+- **Trivial rules:** a rule that always holds is no rule. A rule that never
+  holds means "nobody may do this", so any role that can act is flagged.
+- **Speed:** roles whose condition is (equivalent to) the rule skip the
+  solver. On the 50-role atomic policy, 355 of 432 checks are skipped and
+  the scan drops from ~700ms to ~156ms.
 
-No new Z3 theory needed — `this.z3Context.And(...)` / `Or(...)` / `Not(...)`
-are already imported and used elsewhere in `EncodableToZ3.ts`.
-
-### Shape of the solution
-
-Make `RbacCondition` recursive:
-```typescript
-type RbacCondition = true | RbacBooleanExpression | RbacBooleanContextExpression
-    | { type: 'And', conditions: RbacCondition[] }
-    | { type: 'Or', conditions: RbacCondition[] }
-    | { type: 'Not', condition: RbacCondition };
-```
-`encodeCondition` gets new switch cases for `'And'`/`'Or'`/`'Not'` that
-recurse over `conditions`/`condition` and combine the results with the
-matching Z3 combinator.
+Possible follow-ups:
+- [ ] Flag "dead" permissions whose condition can never hold.
+- [ ] Builder helpers (`and(...)`, `eq(...)`) if the object literals get tiring.
 
 ### Other condition types Cedar supports, for later reference
 
