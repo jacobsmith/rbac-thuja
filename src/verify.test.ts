@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { ThujaVerificationError } from './errors.js';
 import { cmsSchema, createCmsPolicy } from './examples/cms.js';
 import { Policy } from './policy.js';
+import { defineSchema } from './schema.js';
 import { permissionsFingerprint } from './scan.js';
 import type { ExceptionEntry, ExceptionsFile } from './verify.js';
 
@@ -50,7 +51,29 @@ describe('verifyNoUnapprovedBypasses', () => {
     });
 
     it('passes for a consistent policy with no exceptions file', async () => {
+        const policy = new Policy(defineSchema({ ...cmsSchema, roles: ['writer'] }));
+        policy.addRole('writer', [{ action: 'create', resource: 'article', condition: true }]);
+
+        await expect(policy.verifyNoUnapprovedBypasses({ exceptionsFile, update: false })).resolves.toBeDefined();
+    });
+
+    it('fails on declared roles with no permissions', async () => {
         const policy = new Policy(cmsSchema);
+        policy.addRole('writer', [{ action: 'create', resource: 'article', condition: true }]);
+        policy.addRole('editor', []);
+
+        expect(await problemsOf(policy.verifyNoUnapprovedBypasses({ exceptionsFile, update: false }))).toEqual([
+            ['unused-role', 'compliance_officer'],
+            ['unused-role', 'editor'],
+            ['unused-role', 'publisher'],
+        ]);
+        // nothing an exceptions-file update can fix, so no THUJA_UPDATE hint
+        await expect(policy.verifyNoUnapprovedBypasses({ exceptionsFile, update: false })).rejects.toThrow(/UNUSED ROLE  editor(?![\s\S]*THUJA_UPDATE)/);
+    });
+
+    it('does not check unused roles when the schema declares none', async () => {
+        const { roles: _roles, ...undeclared } = cmsSchema;
+        const policy = new Policy(defineSchema(undeclared));
         policy.addRole('writer', [{ action: 'create', resource: 'article', condition: true }]);
 
         await expect(policy.verifyNoUnapprovedBypasses({ exceptionsFile, update: false })).resolves.toBeDefined();

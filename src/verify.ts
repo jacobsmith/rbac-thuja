@@ -45,7 +45,7 @@ export async function verifyNoUnapprovedBypasses(policy: EncodablePolicy, option
         writeFileSync(path, JSON.stringify(file, null, 2) + '\n');
     }
 
-    const problems = checkExceptions(findings, file, now);
+    const problems = [...checkExceptions(findings, file, now), ...checkUnusedRoles(policy)];
     if (problems.length > 0) {
         throw new ThujaVerificationError(formatProblems(problems, options.exceptionsFile, update), problems);
     }
@@ -129,19 +129,34 @@ export function checkExceptions(findings: Array<Finding>, file: ExceptionsFile, 
     return problems;
 }
 
+/** Declared roles nobody gave permissions to: usually a typo or a leftover. */
+export function checkUnusedRoles(policy: EncodablePolicy): Array<VerificationProblem> {
+    return [...(policy.schema.roles ?? [])]
+        .filter((role) => policy.getPermissions(role).length === 0)
+        .sort()
+        .map((role) => ({
+            kind: 'unused-role' as const,
+            id: role,
+            message: `Declared in the schema but has no permissions; give it some with addRole() or remove it from roles.`,
+        }));
+}
+
 const LABELS: Record<VerificationProblem['kind'], string> = {
     unapproved: 'NEW BYPASS',
     changed: 'CHANGED',
     incomplete: 'NEEDS APPROVAL',
     expired: 'EXPIRED',
     stale: 'STALE',
+    'unused-role': 'UNUSED ROLE',
 };
 
 function formatProblems(problems: Array<VerificationProblem>, exceptionsFile: string, updated: boolean): string {
     const lines = problems.map((problem) => `  ✗ ${LABELS[problem.kind]}  ${problem.id}\n      ${problem.message}`);
-    const hint = updated
-        ? `${exceptionsFile} was updated; fill in reason, approvedBy and approvedAt for each entry above.`
-        : `Run your tests with THUJA_UPDATE=1 to update ${exceptionsFile}, then fill in reason, approvedBy and approvedAt.`;
+    const exceptionProblems = problems.some((problem) => problem.kind !== 'unused-role');
+    const hint = !exceptionProblems ? ''
+        : updated
+            ? `\n\n${exceptionsFile} was updated; fill in reason, approvedBy and approvedAt for each entry above.`
+            : `\n\nRun your tests with THUJA_UPDATE=1 to update ${exceptionsFile}, then fill in reason, approvedBy and approvedAt.`;
 
-    return `Thuja found ${problems.length} unapproved permission bypass problem(s) (exceptions file: ${exceptionsFile}):\n\n${lines.join('\n')}\n\n${hint}`;
+    return `Thuja found ${problems.length} permission problem(s) (exceptions file: ${exceptionsFile}):\n\n${lines.join('\n')}${hint}`;
 }

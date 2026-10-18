@@ -120,6 +120,7 @@ all treat a rejected promise as a failure, so Thuja doesn't depend on vitest.
 | Exception with no matching finding          | fail: stale exception, remove it          |
 | Exception past `expires`                    | fail                                      |
 | Exception with an empty `reason`/`approvedBy` | fail                                    |
+| Role declared in `roles` with no permissions | fail: unused role (typo or leftover)  |
 
 ### Update flow
 

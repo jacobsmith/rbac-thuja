@@ -5,7 +5,7 @@ export class ImmutableRolesError extends Error {
     }
 }
 
-export type VerificationProblemKind = 'unapproved' | 'changed' | 'incomplete' | 'expired' | 'stale';
+export type VerificationProblemKind = 'unapproved' | 'changed' | 'incomplete' | 'expired' | 'stale' | 'unused-role';
 
 export type VerificationProblem = {
     kind: VerificationProblemKind,
