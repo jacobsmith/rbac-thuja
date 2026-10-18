@@ -70,6 +70,14 @@ export class PolicyEncoder<Role extends string = string> {
             case 'Not': {
                 return this.z3Context.Not(this.encodeCondition(condition.condition, symbols));
             }
+            case 'ContextLiteralExpression': {
+                const contextAttribute = symbols.context[condition.contextProperty];
+                if (!contextAttribute) {
+                    throw new Error(`No symbol for context attribute "${condition.contextProperty}".`);
+                }
+                const value = typeof condition.value === 'string' ? this.z3Context.String.val(condition.value) : condition.value;
+                return contextAttribute.eq(value);
+            }
         }
 
         const resourceAttribute = symbols.resource[condition.property];

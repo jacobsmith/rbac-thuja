@@ -1,40 +1,39 @@
 import { describe, expect, it } from 'vitest';
 import { cmsPermissions, cmsSchema, createCmsPolicy } from './examples/cms.js';
 import { Policy } from './policy.js';
-import { defineSchema, type PolicySchema } from './schema.js';
+import { contextIs, defineSchema, type PolicySchema } from './schema.js';
 
 describe('roles', () => {
     it('default to false', () => {
         const policy = createCmsPolicy();
-        policy.assignRole('alice', 'writer');
+        const alice = { roles: ['writer'] } as const;
 
-        expect(policy.can('alice', 'publish')).toEqual(false);
-        expect(policy.can('nobody', 'create')).toEqual(false);
+        expect(policy.can(alice, 'publish')).toEqual(false);
+        expect(policy.can({ roles: [] }, 'create')).toEqual(false);
     });
 
     it('evaluates non-conditionals correctly', () => {
         const policy = createCmsPolicy();
-        policy.assignRole('alice', 'writer');
+        const alice = { roles: ['writer'] } as const;
 
-        expect(policy.can('alice', 'create')).toEqual(true);
+        expect(policy.can(alice, 'create')).toEqual(true);
     });
 
     it('evaluates conditionals correctly', () => {
         const policy = createCmsPolicy();
-        policy.assignRole('alice', 'writer');
+        const alice = { roles: ['writer'] } as const;
 
-        expect(policy.can('alice', 'edit', { $type: 'article', published: true })).toEqual(false);
-        expect(policy.can('alice', 'edit', { $type: 'article', published: false })).toEqual(true);
+        expect(policy.can(alice, 'edit', { $type: 'article', published: true })).toEqual(false);
+        expect(policy.can(alice, 'edit', { $type: 'article', published: false })).toEqual(true);
     });
 
     it('allows multiple roles', () => {
         const policy = createCmsPolicy();
-        policy.assignRole('alice', 'writer');
-        policy.assignRole('alice', 'publisher');
+        const alice = { roles: ['writer', 'publisher'] } as const;
 
-        expect(policy.can('alice', 'create')).toEqual(true);
-        expect(policy.can('alice', 'edit', { $type: 'article', published: true })).toEqual(false);
-        expect(policy.can('alice', 'publish', { $type: 'article', published: false })).toEqual(true);
+        expect(policy.can(alice, 'create')).toEqual(true);
+        expect(policy.can(alice, 'edit', { $type: 'article', published: true })).toEqual(false);
+        expect(policy.can(alice, 'publish', { $type: 'article', published: false })).toEqual(true);
     });
 
     it('can one-hot encode bit vectors for each role, in sorted order', () => {
@@ -54,13 +53,13 @@ describe('roles', () => {
             { action: 'edit', resource: 'article', condition: { property: 'authorId', operator: 'eq', contextProperty: 'id', type: 'ContextExpression' } }
         ],
         });
-        policy.assignRole('alice', 'writer');
+        const alice = { roles: ['writer'], id: 'alice' } as const;
 
         const ownArticle = { $type: 'article' as const, published: true, authorId: 'alice' };
         const othersArticle = { $type: 'article' as const, published: true, authorId: 'bob' };
 
-        expect(policy.can('alice', 'edit', ownArticle, { id: 'alice' })).toEqual(true);
-        expect(policy.can('alice', 'edit', othersArticle, { id: 'alice' })).toEqual(false);
+        expect(policy.can(alice, 'edit', ownArticle)).toEqual(true);
+        expect(policy.can(alice, 'edit', othersArticle)).toEqual(false);
     });
 
     it('fails closed when a compared attribute is missing on both sides', () => {
@@ -69,10 +68,10 @@ describe('roles', () => {
             { action: 'edit', resource: 'article', condition: { property: 'authorId', operator: 'eq', contextProperty: 'id', type: 'ContextExpression' } }
         ],
         });
-        policy.assignRole('alice', 'writer');
+        const alice = { roles: ['writer'] } as const;
 
         // undefined == undefined must not count as "is the author"
-        expect(policy.can('alice', 'edit', { $type: 'article', published: false }, {})).toEqual(false);
+        expect(policy.can(alice, 'edit', { $type: 'article', published: false })).toEqual(false);
     });
 
     it('only applies a permission to the resource type it names', () => {
@@ -89,10 +88,10 @@ describe('roles', () => {
             { action: 'edit', resource: 'comment', condition: { property: 'locked', operator: 'eq', value: false, type: 'LiteralExpression' } },
         ],
         });
-        policy.assignRole('mo', 'moderator');
+        const mo = { roles: ['moderator'] } as const;
 
-        expect(policy.can('mo', 'edit', { $type: 'comment', locked: false })).toEqual(true);
-        expect(policy.can('mo', 'edit', { $type: 'article', locked: false })).toEqual(false);
+        expect(policy.can(mo, 'edit', { $type: 'comment', locked: false })).toEqual(true);
+        expect(policy.can(mo, 'edit', { $type: 'article', locked: false })).toEqual(false);
     });
 
     it('compares string literals', () => {
@@ -106,10 +105,10 @@ describe('roles', () => {
             { action: 'edit', resource: 'article', condition: { property: 'status', operator: 'eq', value: 'draft', type: 'LiteralExpression' } },
         ],
         });
-        policy.assignRole('alice', 'writer');
+        const alice = { roles: ['writer'] } as const;
 
-        expect(policy.can('alice', 'edit', { $type: 'article', status: 'draft' })).toEqual(true);
-        expect(policy.can('alice', 'edit', { $type: 'article', status: 'live' })).toEqual(false);
+        expect(policy.can(alice, 'edit', { $type: 'article', status: 'draft' })).toEqual(true);
+        expect(policy.can(alice, 'edit', { $type: 'article', status: 'live' })).toEqual(false);
     });
 });
 
@@ -133,15 +132,15 @@ describe('compound conditions', () => {
             },
         }],
         });
-        policy.assignRole('alice', 'writer');
-        policy.assignRole('erin', 'editor');
+        const alice = { roles: ['writer'], id: 'alice' } as const;
+        const erin = { roles: ['editor'], id: 'erin' } as const;
 
-        expect(policy.can('alice', 'edit', { $type: 'article', published: false, authorId: 'alice' }, { id: 'alice' })).toBe(true);
-        expect(policy.can('alice', 'edit', { $type: 'article', published: true, authorId: 'alice' }, { id: 'alice' })).toBe(false);
+        expect(policy.can(alice, 'edit', { $type: 'article', published: false, authorId: 'alice' })).toBe(true);
+        expect(policy.can(alice, 'edit', { $type: 'article', published: true, authorId: 'alice' })).toBe(false);
         // editors may edit other people's articles, but not when ownership can't be established
-        expect(policy.can('erin', 'edit', { $type: 'article', published: true, authorId: 'alice' }, { id: 'erin' })).toBe(true);
-        expect(policy.can('erin', 'edit', { $type: 'article', published: true, authorId: 'erin' }, { id: 'erin' })).toBe(false);
-        expect(policy.can('erin', 'edit', { $type: 'article', published: true }, { id: 'erin' })).toBe(false);
+        expect(policy.can(erin, 'edit', { $type: 'article', published: true, authorId: 'alice' })).toBe(true);
+        expect(policy.can(erin, 'edit', { $type: 'article', published: true, authorId: 'erin' })).toBe(false);
+        expect(policy.can(erin, 'edit', { $type: 'article', published: true })).toBe(false);
     });
 
     it('validates nested conditions at runtime', () => {
@@ -152,6 +151,61 @@ describe('compound conditions', () => {
         expect(() => addUntyped({ type: 'Or' })).toThrow(/needs a "conditions" array/);
         expect(() => addUntyped({ type: 'Not' })).toThrow(/needs a "condition"/);
         expect(() => addUntyped({ type: 'Xor', conditions: [] })).toThrow(/unknown condition type "Xor"/);
+    });
+});
+
+describe('guards and context-only conditions', () => {
+    const schema = defineSchema({
+        roles: ['visitor', 'writer'],
+        actions: ['read', 'edit'],
+        resources: { article: { published: 'boolean', authorId: 'string' } },
+        context: { id: 'string', authenticated: 'boolean' },
+        public: [{ action: 'read', resource: 'article' }],
+        guards: [{ name: 'authenticated', requires: contextIs('authenticated', true), except: 'public' }],
+    });
+    const policy = new Policy(schema, {
+        visitor: [{ action: 'read', resource: 'article', condition: { type: 'LiteralExpression', property: 'published', operator: 'eq', value: true } }],
+        writer: [
+            { action: 'read', resource: 'article', condition: true },
+            { action: 'edit', resource: 'article', condition: true }, // the guard still applies
+        ],
+    });
+    const live = { $type: 'article', published: true, authorId: 'alice' } as const;
+
+    it('lets anyone with a role act on a public pair, signed in or not', () => {
+        expect(policy.can({ roles: ['visitor'], authenticated: false }, 'read', live)).toBe(true);
+        expect(policy.can({ roles: ['visitor'] }, 'read', live)).toBe(true);
+    });
+
+    it('enforces the guard on every other grant, even unconditional ones', () => {
+        expect(policy.can({ roles: ['writer'], authenticated: true }, 'edit', live)).toBe(true);
+        expect(policy.can({ roles: ['writer'], authenticated: false }, 'edit', live)).toBe(false);
+        expect(policy.can({ roles: ['writer'] }, 'edit', live)).toBe(false); // unknown: fail closed
+    });
+
+    it('supports permissions that depend only on the actor', () => {
+        const mfaSchema = defineSchema({ ...schema, guards: [], context: { id: 'string', authenticated: 'boolean', mfa: 'boolean' } });
+        const strict = new Policy(mfaSchema, {
+            writer: [{ action: 'edit', resource: 'article', condition: { type: 'ContextLiteralExpression', contextProperty: 'mfa', operator: 'eq', value: true } }],
+        });
+
+        expect(strict.can({ roles: ['writer'], mfa: true }, 'edit', live)).toBe(true);
+        expect(strict.can({ roles: ['writer'], mfa: true }, 'edit')).toBe(true); // no resource attributes needed
+        expect(strict.can({ roles: ['writer'], mfa: false }, 'edit', live)).toBe(false);
+    });
+
+    it('validates guards, public entries and context at runtime', () => {
+        const base = { roles: ['writer'], actions: ['edit'], resources: { article: { published: 'boolean' } }, context: { authenticated: 'boolean' } } as const;
+        const make = (extra: object) => () => defineSchema({ ...base, ...extra } as never);
+
+        expect(make({ guards: [{ name: 'g', requires: { type: 'LiteralExpression', property: 'published', operator: 'eq', value: true } }] }))
+            .toThrow(/guards can only reference context.*unknown attribute "published"/);
+        expect(make({ guards: [{ name: 'g', requires: contextIs('nope', true) }] })).toThrow(/unknown context attribute "nope"/);
+        expect(make({ guards: [{ name: 'g', requires: contextIs('authenticated', 'yes') }] })).toThrow(/is a boolean/);
+        expect(make({ guards: [{ name: 'g', requires: true, except: 'private' }] })).toThrow(/"except" can only be 'public'/);
+        expect(make({ guards: [{ name: 'g', requires: true }, { name: 'g', requires: true }] })).toThrow(/guard "g" more than once/);
+        expect(make({ public: [{ action: 'delete', resource: 'article' }] })).toThrow(/Public entry: unknown action "delete"/);
+        expect(make({ context: { roles: 'string' } })).toThrow(/reserved attribute "roles"/);
     });
 });
 
@@ -184,10 +238,10 @@ describe('validation', () => {
         const permissions = JSON.parse(JSON.stringify(cmsPermissions));
 
         const policy = new Policy(schema, permissions);
-        policy.assignRole('alice', 'writer');
+        const alice = { roles: ['writer'] } as const;
 
-        expect(policy.can('alice', 'edit', { $type: 'article', published: false })).toBe(true);
-        expect(policy.can('alice', 'edit', { $type: 'article', published: true })).toBe(false);
+        expect(policy.can(alice, 'edit', { $type: 'article', published: false })).toBe(true);
+        expect(policy.can(alice, 'edit', { $type: 'article', published: true })).toBe(false);
         expect(() => new Policy(schema, { ...permissions, admin: [] })).toThrow(/Unknown role "admin"/);
     });
 
@@ -200,7 +254,8 @@ describe('validation', () => {
         const untypedRole = 'wirter' as never;
 
         expect(() => new Policy(cmsSchema, { [untypedRole]: [] })).toThrow(/Unknown role "wirter"/);
-        expect(() => new Policy(cmsSchema).assignRole('alice', untypedRole)).toThrow(/Unknown role "wirter"/);
+        // at request time an unknown role just grants nothing, rather than throwing
+        expect(new Policy(cmsSchema, cmsPermissions).can({ roles: [untypedRole] }, 'create')).toBe(false);
     });
 
     it('accepts any role when the schema declares none', () => {

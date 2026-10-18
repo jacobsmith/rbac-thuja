@@ -1,4 +1,4 @@
-import type { AnyCondition, AnyInvariant, AnyPermission, Attributes, PolicySchema } from "./schema.js";
+import type { AnyActionResource, AnyCondition, AnyGuard, AnyInvariant, AnyPermission, Attributes, PolicySchema } from "./schema.js";
 
 /** The canonical never-true condition (an empty `Or`); there is no `false` literal. */
 export const NEVER: AnyCondition = { type: 'Or', conditions: [] };
@@ -16,7 +16,8 @@ export function normalizeCondition(condition: AnyCondition): AnyCondition {
 
     switch (condition.type) {
         case 'LiteralExpression':
-        case 'ContextExpression': {
+        case 'ContextExpression':
+        case 'ContextLiteralExpression': {
             return condition;
         }
         case 'Not': {
@@ -89,6 +90,9 @@ function renderKey(condition: AnyCondition): string {
         case 'ContextExpression': {
             return `${condition.property}==context.${condition.contextProperty}`;
         }
+        case 'ContextLiteralExpression': {
+            return `context.${condition.contextProperty}==${JSON.stringify(condition.value)}`;
+        }
         case 'Not': {
             const inner = renderKey(condition.condition);
             return inner.startsWith('(') ? `!${inner}` : `!(${inner})`;
@@ -139,6 +143,10 @@ function evaluate(
             const contextValue = context?.[condition.contextProperty];
             return resourceValue === undefined || contextValue === undefined ? undefined : resourceValue === contextValue;
         }
+        case 'ContextLiteralExpression': {
+            const contextValue = context?.[condition.contextProperty];
+            return contextValue === undefined ? undefined : contextValue === condition.value;
+        }
         case 'Not': {
             const inner = evaluate(condition.condition, resource, context);
             return inner === undefined ? undefined : !inner;
@@ -187,11 +195,12 @@ export function validatePermission(schema: PolicySchema, role: string, permissio
     validateCondition(schema, attributes, permission.condition, where);
 }
 
-/** Runtime check of a schema invariant (the schema's own types cover TypeScript consumers). */
-export function validateInvariant(schema: PolicySchema, invariant: AnyInvariant) {
-    const where = `Invariant "${invariant.name}"`;
-    const actions = typeof invariant.action === 'string' ? [invariant.action] : invariant.action;
+export function actionsOf(entry: AnyActionResource): ReadonlyArray<string> {
+    return typeof entry.action === 'string' ? [entry.action] : entry.action;
+}
 
+export function validateActionResource(schema: PolicySchema, entry: AnyActionResource, where: string) {
+    const actions = actionsOf(entry);
     if (actions.length === 0) {
         throw new Error(`${where}: needs at least one action.`);
     }
@@ -200,10 +209,39 @@ export function validateInvariant(schema: PolicySchema, invariant: AnyInvariant)
             throw new Error(`${where}: unknown action "${action}".`);
         }
     }
-    const attributes = schema.resources[invariant.resource];
-    if (!attributes) {
-        throw new Error(`${where}: unknown resource "${invariant.resource}".`);
+    if (!schema.resources[entry.resource]) {
+        throw new Error(`${where}: unknown resource "${entry.resource}".`);
     }
+}
+
+export function validateGuard(schema: PolicySchema, guard: AnyGuard) {
+    const where = `Guard "${guard.name}"`;
+    if (guard.requires === undefined) {
+        throw new Error(`${where}: needs "requires".`);
+    }
+    if (guard.except !== undefined && guard.except !== 'public') {
+        throw new Error(`${where}: "except" can only be 'public'.`);
+    }
+    // no resource attributes: a guard spans every resource
+    validateCondition(schema, {}, guard.requires, `${where} (guards can only reference context)`);
+}
+
+/** Whether `action` on `resource` is marked public in the schema. */
+export function isPublic(schema: PolicySchema, action: string, resource: string): boolean {
+    return (schema.public ?? []).some((entry) => entry.resource === resource && actionsOf(entry).includes(action));
+}
+
+/** The guards that apply to `action` on `resource`. */
+export function guardsFor(schema: PolicySchema, action: string, resource: string): Array<AnyGuard> {
+    const exempt = isPublic(schema, action, resource);
+    return (schema.guards ?? []).filter((guard) => !(guard.except === 'public' && exempt));
+}
+
+/** Runtime check of a schema invariant (the schema's own types cover TypeScript consumers). */
+export function validateInvariant(schema: PolicySchema, invariant: AnyInvariant) {
+    const where = `Invariant "${invariant.name}"`;
+    validateActionResource(schema, invariant, where);
+    const attributes = schema.resources[invariant.resource]!;
     if (invariant.requires === undefined && invariant.onlyRoles === undefined) {
         throw new Error(`${where}: needs "requires", "onlyRoles", or both.`);
     }
@@ -236,6 +274,16 @@ function validateCondition(schema: PolicySchema, attributes: Attributes, conditi
                 throw new Error(`${where}: Not needs a "condition".`);
             }
             validateCondition(schema, attributes, condition.condition, where);
+            return;
+        }
+        case 'ContextLiteralExpression': {
+            const contextType = schema.context[condition.contextProperty];
+            if (!contextType) {
+                throw new Error(`${where}: unknown context attribute "${condition.contextProperty}".`);
+            }
+            if (typeof condition.value !== contextType) {
+                throw new Error(`${where}: context "${condition.contextProperty}" is a ${contextType}, got ${JSON.stringify(condition.value)}.`);
+            }
             return;
         }
         case 'LiteralExpression':

@@ -19,7 +19,7 @@ export const schema = defineSchema({
         report: { confidential: 'boolean', department: 'string', region: 'string' },
         profile: { active: 'boolean', userId: 'string', department: 'string' },
     },
-    context: { id: 'string', region: 'string', department: 'string' },
+    context: { id: 'string', region: 'string', department: 'string', authenticated: 'boolean' },
 });
 
 export type PermissionsByRole = Map<string, Array<AnyPermission>>;
@@ -205,12 +205,24 @@ export function bruteForceFindings(permissionsByRole: PermissionsByRole, policyS
     for (const resource of Object.keys(policySchema.resources)) {
         for (const action of policySchema.actions) {
             // each role's effective condition: the Or of its permissions here
-            const roleRules = new Map<string, { key: string, table: string }>();
+            // guards that apply here are enforced on every grant (public pairs may be exempt)
+            const isPublicPair = (policySchema.public ?? []).some((entry) => entry.resource === resource
+                && (typeof entry.action === 'string' ? entry.action === action : entry.action.includes(action)));
+            const guardTables = (policySchema.guards ?? [])
+                .filter((guard) => !(guard.except === 'public' && isPublicPair))
+                .map((guard) => truthTable(guard.requires, resource));
+            const withGuards = (table: string) => guardTables.reduce((acc, guard) =>
+                [...acc].map((bit, i) => bit === '1' && guard[i] === '1' ? '1' : '0').join(''), table);
+
+            // each role's effective condition: the Or of its permissions here. Rules are inferred
+            // from the conditions as written; what a role can actually do also needs the guards.
+            const roleRules = new Map<string, { key: string, table: string, grant: string }>();
             for (const [role, permissions] of permissionsByRole) {
                 const conditions = permissions.filter((p) => p.action === action && p.resource === resource).map((p) => p.condition);
                 if (conditions.length > 0) {
                     const effective: AnyCondition = { type: 'Or', conditions };
-                    roleRules.set(role, { key: conditionKey(normalizeCondition(effective)), table: truthTable(effective, resource) });
+                    const table = truthTable(effective, resource);
+                    roleRules.set(role, { key: conditionKey(normalizeCondition(effective)), table, grant: withGuards(table) });
                 }
             }
 
@@ -247,7 +259,7 @@ export function bruteForceFindings(permissionsByRole: PermissionsByRole, policyS
             for (const invariant of declared) {
                 if (!invariant.onlyRoles) { continue; }
                 for (const [role, rule] of roleRules) {
-                    if (!invariant.onlyRoles.includes(role) && rule.table.includes('1')) {
+                    if (!invariant.onlyRoles.includes(role) && rule.grant.includes('1')) {
                         notAllowed.add(role);
                         findings.add(`${role}|${action}|${resource}|invariant:${invariant.name}`);
                     }
@@ -261,7 +273,7 @@ export function bruteForceFindings(permissionsByRole: PermissionsByRole, policyS
                     const required = holds(requiredTables[n]!);
                     for (const [role, rule] of roleRules) {
                         if (invariant.onlyRoles && !invariant.onlyRoles.includes(role)) { continue; }
-                        const grants = holds(rule.table);
+                        const grants = holds(rule.grant);
                         if (someWorld((i) => grants(i) && !required(i))) {
                             findings.add(`${role}|${action}|${resource}|invariant:${invariant.name}`);
                         }
@@ -271,7 +283,7 @@ export function bruteForceFindings(permissionsByRole: PermissionsByRole, policyS
                 const names = conditionInvariants.map((invariant) => invariant.name).sort().join('+');
                 for (const { name, table } of rules) {
                     const rule = holds(table);
-                    if (someWorld((i) => requiredTables.every((t) => t[i] === '1') && !rule(i))) {
+                    if (someWorld((i) => requiredTables.every((t) => t[i] === '1') && guardTables.every((t) => t[i] === '1') && !rule(i))) {
                         findings.add(`invariant:${names}|${action}|${resource}|inferred:${name}`);
                     }
                 }
@@ -282,7 +294,7 @@ export function bruteForceFindings(permissionsByRole: PermissionsByRole, policyS
                 if (notAllowed.has(role)) { continue; }
                 for (const { name, table } of rules) {
                     // a bypass: some assignment where the role grants but the rule doesn't hold
-                    if ([...rule.table].some((bit, i) => bit === '1' && table[i] === '0')) {
+                    if ([...rule.grant].some((bit, i) => bit === '1' && table[i] === '0')) {
                         findings.add(`${role}|${action}|${resource}|inferred:${name}`);
                     }
                 }
@@ -301,12 +313,13 @@ export function enumerator(permissionsByRole: PermissionsByRole, policySchema: P
         switch (condition.type) {
             case 'And': case 'Or': { condition.conditions.forEach(collect); return; }
             case 'Not': { collect(condition.condition); return; }
-            case 'LiteralExpression': { if (typeof condition.value === 'string') { literals.add(condition.value); } return; }
+            case 'LiteralExpression': case 'ContextLiteralExpression': { if (typeof condition.value === 'string') { literals.add(condition.value); } return; }
             default: { return; }
         }
     };
     all.forEach((permission) => collect(permission.condition));
     (policySchema.invariants ?? []).forEach((invariant) => invariant.requires !== undefined && collect(invariant.requires));
+    (policySchema.guards ?? []).forEach((guard) => collect(guard.requires));
     const stringDomain = ['v1', 'v2', ...literals];
 
     const assignments = (attributes: Attributes): Array<Record<string, boolean | string>> =>
@@ -378,4 +391,27 @@ export function generateInvariants(
         }
     }
     return { invariants, styles };
+}
+
+/**
+ * Adds context-only conditions to a compound policy: some grants additionally require (or
+ * offer an alternative via) `context.authenticated`, so guards and context-only conditions
+ * interact with everything else.
+ */
+export function withContextConditions(permissionsByRole: PermissionsByRole, seed = 20261021): PermissionsByRole {
+    const random = prng(seed);
+    const authenticated = (value: boolean): AnyCondition => ({ type: 'ContextLiteralExpression', contextProperty: 'authenticated', operator: 'eq', value });
+    return new Map([...permissionsByRole].map(([role, permissions]) => [role, permissions.map((permission) => {
+        const roll = random();
+        if (roll < 0.15) {
+            return { ...permission, condition: and(permission.condition, authenticated(true)) }; // redundant where guarded
+        }
+        if (roll < 0.22) {
+            return { ...permission, condition: or(permission.condition, authenticated(true)) }; // any signed-in user
+        }
+        if (roll < 0.25) {
+            return { ...permission, condition: authenticated(false) }; // anonymous only
+        }
+        return permission;
+    })]));
 }

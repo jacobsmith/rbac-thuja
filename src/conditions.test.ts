@@ -5,6 +5,7 @@ import type { AnyCondition } from './schema.js';
 const published = (value: boolean): AnyCondition => ({ type: 'LiteralExpression', property: 'published', operator: 'eq', value });
 const owner: AnyCondition = { type: 'ContextExpression', property: 'authorId', operator: 'eq', contextProperty: 'id' };
 const draft: AnyCondition = { type: 'LiteralExpression', property: 'status', operator: 'eq', value: 'draft' };
+const signedIn: AnyCondition = { type: 'ContextLiteralExpression', contextProperty: 'authenticated', operator: 'eq', value: true };
 const and = (...conditions: Array<AnyCondition>): AnyCondition => ({ type: 'And', conditions });
 const or = (...conditions: Array<AnyCondition>): AnyCondition => ({ type: 'Or', conditions });
 const not = (condition: AnyCondition): AnyCondition => ({ type: 'Not', condition });
@@ -74,5 +75,19 @@ describe('evaluateCondition', () => {
         expect(evaluateCondition(and(published(true), owner), noPublished, { id: 'bob' })).toBe(false); // unknown && false
         expect(evaluateCondition(and(published(true), owner), noPublished, { id: 'alice' })).toBe(false); // unknown && true: deny
         expect(evaluateCondition(not(and(published(true), owner)), noPublished, { id: 'bob' })).toBe(true); // !(unknown && false)
+    });
+});
+
+describe('context-only conditions', () => {
+    it('have their own key', () => {
+        expect(conditionKey(signedIn)).toEqual('context.authenticated==true');
+        expect(conditionKey(and(published(false), signedIn))).toEqual('(context.authenticated==true && published==false)');
+    });
+
+    it('evaluate against the context alone, and fail closed when it is missing', () => {
+        expect(evaluateCondition(signedIn, undefined, { authenticated: true })).toBe(true);
+        expect(evaluateCondition(signedIn, undefined, { authenticated: false })).toBe(false);
+        expect(evaluateCondition(signedIn, undefined, {})).toBe(false);
+        expect(evaluateCondition(not(signedIn), undefined, {})).toBe(false); // unknown stays unknown under Not
     });
 });

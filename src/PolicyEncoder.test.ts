@@ -161,4 +161,17 @@ describe('PolicyEncoder', () => {
         solver2.add(encoder.encodeCondition({ type: 'Or', conditions: [] }, symbols));
         expect(await solver2.check()).toEqual('unsat');
     });
+
+    it('encodes a context-only condition', async () => {
+        const context = await z3Context();
+        const encoder = new PolicyEncoder(createCmsPolicy(), context);
+        const symbols = encoder.symbolsFor('article');
+        const actorId = symbols.context['id'] as Seq;
+
+        const encoded = encoder.encodeCondition({ type: 'ContextLiteralExpression', contextProperty: 'id', operator: 'eq', value: 'alice' }, symbols);
+
+        const solver = new context.Solver();
+        solver.add(encoded.neq(actorId.eq(context.String.val('alice')))); // refutation
+        expect(await solver.check()).toEqual('unsat');
+    });
 });

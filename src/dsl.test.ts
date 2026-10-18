@@ -4,7 +4,7 @@ import { contextOf, definePolicy, describeRole } from './dsl.js';
 import { cmsSchema, createCmsPolicy, createGovernedCmsPolicy } from './examples/cms.js';
 import { createCmsPolicyByResource, createCmsPolicyChained, createGovernedCmsPolicyByResource } from './examples/cmsResources.js';
 import type { Policy } from './policy.js';
-import type { PolicySchema } from './schema.js';
+import { defineSchema, type PolicySchema } from './schema.js';
 
 /** Each role's permissions as sorted `action resource condition-key` lines. */
 function permissionTable<S extends PolicySchema>(policy: Policy<S>) {
@@ -55,10 +55,10 @@ describe('definePolicy (resource-centric)', () => {
         const policy = definePolicy(cmsSchema, ({ resource, ctx }) => {
             resource('article', (article) => article.edit({ writer: { published: false, authorId: ctx.id } }));
         });
-        policy.assignRole('alice', 'writer');
+        const alice = { roles: ['writer'] } as const;
 
-        expect(policy.can('alice', 'edit', { $type: 'article', published: false, authorId: 'alice' }, { id: 'alice' })).toBe(true);
-        expect(policy.can('alice', 'edit', { $type: 'article', published: false, authorId: 'bob' }, { id: 'alice' })).toBe(false);
+        expect(policy.can({ ...alice, id: 'alice' }, 'edit', { $type: 'article', published: false, authorId: 'alice' })).toBe(true);
+        expect(policy.can({ ...alice, id: 'alice' }, 'edit', { $type: 'article', published: false, authorId: 'bob' })).toBe(false);
     });
 
     it('collects a role\'s grants across resources and calls', () => {
@@ -104,6 +104,27 @@ describe('definePolicy (resource-centric)', () => {
         expect(describeRole(policy, 'publisher')).toEqual(['edit article when ((authorId==context.id && published==false) || published==true)']);
     });
 
+    it('builds context-only conditions with context(...)', () => {
+        const schema = defineSchema({
+            roles: ['writer', 'editor'],
+            actions: ['edit'],
+            resources: { article: { published: 'boolean', authorId: 'string' } },
+            context: { id: 'string', mfa: 'boolean' },
+        });
+        const policy = definePolicy(schema, ({ resource, ctx }) => {
+            resource('article', (article, { context, any }) => {
+                article.edit({
+                    writer: { published: false, authorId: ctx.id },
+                    editor: any(context({ mfa: true }), { published: false }),
+                });
+            });
+        });
+
+        expect(describeRole(policy, 'editor')).toEqual(['edit article when (context.mfa==true || published==false)']);
+        expect(policy.can({ roles: ['editor'], mfa: true }, 'edit', { $type: 'article', published: true })).toBe(true);
+        expect(policy.can({ roles: ['editor'], mfa: false }, 'edit', { $type: 'article', published: true })).toBe(false);
+    });
+
     it('rejects mistakes the types would catch, for JavaScript consumers', () => {
         expect(() => definePolicy(cmsSchema, ({ resource }) => resource('page' as never))).toThrow(/Unknown resource "page"/);
         expect(() => definePolicy(cmsSchema, ({ resource }) => resource('article', (a) => a.edit({ writer: {} })))).toThrow(/empty attribute object would allow everything/);
@@ -114,7 +135,7 @@ describe('definePolicy (resource-centric)', () => {
 
 describe('describeRole', () => {
     it('gives the role-centric view of a resource-centric policy', () => {
-        expect(describeRole(createCmsPolicyByResource(), 'writer')).toEqual(['create article', 'edit article when published==false']);
-        expect(describeRole(createCmsPolicyByResource(), 'publisher')).toEqual(['publish article', 'unpublish article when published==true']);
+        expect(describeRole(createCmsPolicyByResource(), 'writer')).toEqual(['create article', 'edit article when published==false', 'read article when published==true']);
+        expect(describeRole(createCmsPolicyByResource(), 'publisher')).toEqual(['publish article', 'read article when published==true', 'unpublish article when published==true']);
     });
 });

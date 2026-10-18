@@ -13,6 +13,7 @@ import {
     generateCompoundPermissions,
     generateInvariants,
     schema,
+    withContextConditions,
 } from './testing/stressPolicy.js';
 import type { ExceptionsFile } from './verify.js';
 
@@ -175,4 +176,43 @@ describe('stress: 50 roles, compound conditions, declared invariants and allowli
 
         expect(loose).toEqual([]);
     }, 300_000);
+});
+
+describe('stress: 50 roles, guards, public pairs and context-only conditions', () => {
+    const { permissionsByRole: compound, houseRules } = generateCompoundPermissions();
+    const permissionsByRole = withContextConditions(compound);
+    const { invariants } = generateInvariants(permissionsByRole, houseRules);
+    const guardedSchema = {
+        ...schema,
+        invariants,
+        public: [{ action: 'read', resource: 'article' }, { action: ['read', 'export'], resource: 'comment' }],
+        guards: [{ name: 'authenticated', requires: { type: 'ContextLiteralExpression', contextProperty: 'authenticated', operator: 'eq', value: true }, except: 'public' }],
+    } as const;
+
+    it('finds exactly what a brute-force search finds', async () => {
+        const started = performance.now();
+        const { findings, stats } = await scanPolicy(buildPolicy(permissionsByRole, guardedSchema as never));
+        const elapsed = performance.now() - started;
+        const expected = bruteForceFindings(permissionsByRole, guardedSchema as never);
+        console.log(`[stress:guards] ${findings.length} findings in ${elapsed.toFixed(0)}ms`, stats);
+
+        expect(findings.map((finding) => finding.id)).toEqual([...expected].sort());
+    }, 300_000);
+
+    it('never lets an anonymous-only grant act on a guarded pair', async () => {
+        const policy = buildPolicy(permissionsByRole, guardedSchema as never);
+        const anonymousOnly = [...permissionsByRole].flatMap(([role, permissions]) => permissions
+            .filter((p) => p.condition !== true && p.condition.type === 'ContextLiteralExpression' && p.condition.value === false)
+            .map((p) => ({ role, ...p })));
+        expect(anonymousOnly.length).toBeGreaterThan(0);
+
+        for (const { role, action, resource } of anonymousOnly) {
+            const isPublicPair = guardedSchema.public.some((entry) => entry.resource === resource && ([] as Array<string>).concat(entry.action).includes(action));
+            const anonymous = { roles: [role], authenticated: false, id: 'v1', region: 'v1', department: 'v1' };
+            const others = (permissionsByRole.get(role) ?? []).filter((p) => p.action === action && p.resource === resource).length;
+            if (!isPublicPair && others === 1) {
+                expect(policy.can(anonymous as never, action as never, { $type: resource } as never), `${role} ${action} ${resource}`).toBe(false);
+            }
+        }
+    });
 });

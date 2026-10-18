@@ -10,6 +10,7 @@ describe('inferRules', () => {
             .map((group) => [group.action, group.resource, [...group.conditions.keys()]]);
 
         expect(groups).toEqual([
+            ['read', 'article', ['published==true']],
             ['edit', 'article', ['published==false']],
             ['unpublish', 'article', ['published==true']],
         ]);
@@ -316,6 +317,67 @@ describe('declared invariants', () => {
 
         expect(before?.id).toEqual(after?.id);
         expect(before?.fingerprint).not.toEqual(after?.fingerprint);
+    });
+});
+
+describe('guards in the scan', () => {
+    const signedIn = { type: 'ContextLiteralExpression', contextProperty: 'authenticated', operator: 'eq', value: true } as const;
+    const unpublished = { type: 'LiteralExpression', property: 'published', operator: 'eq', value: false } as const;
+    const guardedSchema = (extra: object = {}) => defineSchema({
+        roles: ['writer', 'editor', 'publisher'],
+        actions: ['read', 'edit'],
+        resources: { article: { published: 'boolean' } },
+        context: { authenticated: 'boolean' },
+        public: [{ action: 'read', resource: 'article' }],
+        guards: [{ name: 'authenticated', requires: signedIn, except: 'public' }],
+        ...extra,
+    } as never);
+    const grant = (action: string, condition: unknown) => ({ action, resource: 'article', condition }) as never;
+    const ids = async (schema: ReturnType<typeof guardedSchema>, roles: Record<string, Array<never>>) =>
+        (await new Policy(schema, roles as never).findBypasses()).map((finding) => finding.id);
+
+    it('treats a guarded requirement as already met', async () => {
+        // writer spells out "signed in", the others rely on the guard: on a guarded pair that's the same thing
+        expect(await ids(guardedSchema(), {
+            writer: [grant('edit', { type: 'And', conditions: [unpublished, signedIn] })],
+            editor: [grant('edit', unpublished)],
+            publisher: [grant('edit', unpublished)],
+        })).toEqual([]);
+    });
+
+    it('still flags skipping it on a public pair, where no guard applies', async () => {
+        const readSignedIn = grant('read', { type: 'And', conditions: [unpublished, signedIn] });
+        expect(await ids(guardedSchema(), {
+            writer: [readSignedIn],
+            editor: [readSignedIn],
+            publisher: [grant('read', unpublished)],
+        })).toEqual(['publisher|read|article|inferred:(context.authenticated==true && published==false)']);
+    });
+
+    it('satisfies an invariant through the guard', async () => {
+        const schema = guardedSchema({ invariants: [{ name: 'signed-in-edits', action: 'edit', resource: 'article', requires: signedIn }] });
+        const { findings } = await scanPolicy(new Policy(schema, { writer: [grant('edit', true)], editor: [grant('edit', unpublished)] } as never));
+
+        // writer's unconditional grant only applies to signed-in users, so the invariant holds
+        expect(findings.filter((finding) => finding.kind === 'invariant')).toEqual([]);
+    });
+
+    it('changes fingerprints when the guards change, and not otherwise', async () => {
+        const roles = { writer: [grant('edit', true)], editor: [grant('edit', unpublished)], publisher: [grant('edit', unpublished)] };
+        const fingerprintOf = async (schema: ReturnType<typeof guardedSchema>) =>
+            (await new Policy(schema, roles as never).findBypasses()).find((finding) => finding.role === 'writer')!.fingerprint;
+
+        const guarded = await fingerprintOf(guardedSchema());
+        expect(await fingerprintOf(guardedSchema())).toEqual(guarded);
+        expect(await fingerprintOf(guardedSchema({ guards: [] }))).not.toEqual(guarded);
+    });
+
+    it('does not count a role whose only grant the guard rules out', async () => {
+        const schema = guardedSchema({ invariants: [{ name: 'writers-only', action: 'edit', resource: 'article', onlyRoles: ['writer'] }] });
+        const anonymousOnly = { type: 'ContextLiteralExpression', contextProperty: 'authenticated', operator: 'eq', value: false };
+        const { findings } = await scanPolicy(new Policy(schema, { writer: [grant('edit', true)], editor: [grant('edit', anonymousOnly)] } as never));
+
+        expect(findings.filter((finding) => finding.kind === 'not-allowed')).toEqual([]);
     });
 });
 

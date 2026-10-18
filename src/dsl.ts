@@ -63,8 +63,15 @@ export type ResourceBuilder<S extends PolicySchema, R extends ResourceName<S>> =
     can(action: Action<S>, roles: ReadonlyArray<RoleName<S>>, condition?: ConditionInput<S, R>): ResourceBuilder<S, R>,
 };
 
+/** `{ authenticated: true }`: every listed context attribute must equal its value. */
+export type ContextShorthand<S extends PolicySchema> = {
+    readonly [K in keyof S['context'] & string]?: AttributeValue<S['context'][K]>
+};
+
 /** Condition combinators typed for one resource. */
 export type Operators<S extends PolicySchema, R extends ResourceName<S>> = {
+    /** A condition on the acting user/request alone: `context({ authenticated: true })`. */
+    context(values: ContextShorthand<S>): Expr,
     any(...conditions: Array<ConditionInput<S, R>>): Expr,
     all(...conditions: Array<ConditionInput<S, R>>): Expr,
     not(condition: ConditionInput<S, R>): Expr,
@@ -150,6 +157,15 @@ function contextRefs(schema: PolicySchema): Record<string, ContextRef> {
 function operators(ctx: Record<string, ContextRef>, resource: string) {
     const compileAll = (inputs: Array<unknown>) => inputs.map((input) => compile(input, resource, 'condition'));
     return {
+        context: (values: Record<string, boolean | string | undefined>) => {
+            const equalities: Array<AnyCondition> = Object.entries(values)
+                .filter(([, value]) => value !== undefined)
+                .map(([contextProperty, value]) => ({ type: 'ContextLiteralExpression', contextProperty, operator: 'eq', value: value! }));
+            if (equalities.length === 0) {
+                throw new Error('context({}) would allow everything; use true if that\'s intended.');
+            }
+            return new Expr(equalities.length === 1 ? equalities[0]! : { type: 'And', conditions: equalities });
+        },
         any: (...inputs: Array<unknown>) => new Expr({ type: 'Or', conditions: compileAll(inputs) }),
         all: (...inputs: Array<unknown>) => new Expr({ type: 'And', conditions: compileAll(inputs) }),
         not: (input: unknown) => new Expr({ type: 'Not', condition: compile(input, resource, 'condition') }),

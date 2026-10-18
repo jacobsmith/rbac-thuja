@@ -1,11 +1,9 @@
-import { evaluateCondition, validatePermission } from "./conditions.js";
-import { validateSchema, type Action, type AnyPermission, type ContextValue, type Permission, type PolicySchema, type ResourceValue, type RoleName } from "./schema.js";
+import { evaluateCondition, guardsFor, validatePermission } from "./conditions.js";
+import { validateSchema, type Action, type AnyPermission, type Actor, type Permission, type PolicySchema, type ResourceValue, type RoleName } from "./schema.js";
 // Type-only: the scan/verify modules (and Z3 behind them) are loaded on demand so
 // apps that only call `can()` never pay for them.
 import type { Finding } from "./scan.js";
 import type { VerificationReport, VerifyOptions } from "./verify.js";
-
-export type UserId = string;
 
 export class RbacBitVector<Role> {
     public name: Role;
@@ -31,7 +29,6 @@ export type PermissionsByRole<S extends PolicySchema> = {
 export class Policy<S extends PolicySchema> {
     public readonly schema: S;
     private rolePermissions: Map<RoleName<S>, ReadonlyArray<AnyPermission>> = new Map();
-    private userRoles: Map<UserId, Array<RoleName<S>>> = new Map();
 
     /** Roles and their permissions are fixed once the policy is built. */
     constructor(schema: S, permissions: PermissionsByRole<S> = {}) {
@@ -46,16 +43,6 @@ export class Policy<S extends PolicySchema> {
             rolePermissions.forEach((permission) => validatePermission(this.schema, role, permission));
             this.rolePermissions.set(role, [...rolePermissions]);
         }
-    }
-
-    assignRole(user: UserId, role: RoleName<S>) {
-        this.assertDeclaredRole(role);
-        const existingRoles = this.userRoles.get(user);
-        if (existingRoles) {
-            this.userRoles.set(user, [...existingRoles, role]);
-            return;
-        }
-        this.userRoles.set(user, [role]);
     }
 
     private assertDeclaredRole(role: string) {
@@ -74,18 +61,22 @@ export class Policy<S extends PolicySchema> {
     }
 
     /**
-     * Without a resource, only unconditional permissions can grant (for any resource type).
-     * With one, permissions must target that resource type and their condition must hold.
+     * Whether `actor` (its roles plus the schema's context attributes) may perform `action`.
+     *
+     * Without a resource, only permissions whose condition needs no resource attributes can
+     * grant (for any resource type). With one, permissions must target that resource type and
+     * their condition must hold. Either way, the schema's guards for that action/resource must
+     * hold too. Roles the policy doesn't know grant nothing.
      */
-    can(user: UserId, action: Action<S>, resource?: ResourceValue<S>, context?: ContextValue<S>): boolean {
-        const roles = this.userRoles.get(user) ?? [];
+    can(actor: Actor<S>, action: Action<S>, resource?: ResourceValue<S>): boolean {
         const resourceRecord = resource as Readonly<Record<string, unknown>> | undefined;
-        const contextRecord = context as Readonly<Record<string, unknown>> | undefined;
+        const context = actor as unknown as Readonly<Record<string, unknown>>;
 
-        return roles.some((role) => this.getPermissions(role).some((permission) =>
+        return actor.roles.some((role) => this.getPermissions(role).some((permission) =>
             permission.action === action
             && (resource === undefined || permission.resource === resource.$type)
-            && evaluateCondition(permission.condition, resourceRecord, contextRecord)
+            && guardsFor(this.schema, permission.action, permission.resource).every((guard) => evaluateCondition(guard.requires, resourceRecord, context))
+            && evaluateCondition(permission.condition, resourceRecord, context)
         ));
     }
 

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Bool, init } from "z3-solver";
-import { conditionKey, evaluateCondition, normalizeCondition } from "./conditions.js";
+import { conditionKey, evaluateCondition, guardsFor, normalizeCondition } from "./conditions.js";
 import { PolicyEncoder, type EncodablePolicy } from "./PolicyEncoder.js";
 import type { AnyCondition, Attributes } from "./schema.js";
 
@@ -203,13 +203,15 @@ class WorldSampler {
             switch (condition.type) {
                 case 'And': case 'Or': { condition.conditions.forEach(collect); return; }
                 case 'Not': { collect(condition.condition); return; }
-                case 'LiteralExpression': { if (typeof condition.value === 'string') { literals.add(condition.value); } return; }
+                case 'LiteralExpression':
+                case 'ContextLiteralExpression': { if (typeof condition.value === 'string') { literals.add(condition.value); } return; }
                 case 'ContextExpression': { return; }
             }
         };
         for (const role of this.policy.getRoles()) {
             this.policy.getPermissions(role).filter((p) => p.resource === resource).forEach((p) => collect(p.condition));
         }
+        (this.policy.schema.guards ?? []).forEach((guard) => collect(guard.requires));
 
         const strings = [...literals].sort();
         let seed = 0x9E3779B9;
@@ -334,7 +336,16 @@ export async function scanPolicy(policy: EncodablePolicy): Promise<ScanResult> {
         stats.pairs++;
         const symbols = encoder.symbolsFor(resource);
         const declared = declaredByPair.get(pairKey) ?? [];
-        const grants = new Map([...roleRules].map(([role, rule]) => [role, encoder.encodeCondition(rule.condition, symbols)]));
+        // Guards are enforced on every grant here, so every question assumes they hold.
+        const applicableGuards = guardsFor(policy.schema, action, resource);
+        const guards = applicableGuards.map((guard) => encoder.encodeCondition(guard.requires, symbols));
+        // Guards change what roles can actually do, so approvals depend on them too.
+        const guardKeys = applicableGuards.map((guard) => `guard:${guard.name}:${conditionKey(guard.requires)}`).sort();
+        const guarded = (condition: AnyCondition) => {
+            const encoded = encoder.encodeCondition(condition, symbols);
+            return guards.length === 0 ? encoded : z3Context.And(encoded, ...guards);
+        };
+        const grants = new Map([...roleRules].map(([role, rule]) => [role, guarded(rule.condition)]));
         const notAllowed = new Set<string>();
 
         // Allowlists: a role outside onlyRoles that can act at all is a finding.
@@ -355,7 +366,7 @@ export async function scanPolicy(policy: EncodablePolicy): Promise<ScanResult> {
                         role, action, resource,
                         invariant: invariant.name,
                         description: `Role "${role}" can ${action} ${resource}, but invariant "${invariant.name}" only allows ${invariant.onlyRoles.join(', ') || 'no roles'}.`,
-                        fingerprint: permissionsFingerprint(policy, role, action, resource, invariant.definition),
+                        fingerprint: permissionsFingerprint(policy, role, action, resource, invariant.definition, ...guardKeys),
                     });
                 }
             }
@@ -388,7 +399,7 @@ export async function scanPolicy(policy: EncodablePolicy): Promise<ScanResult> {
                             role, action, resource,
                             invariant: invariant.name,
                             description: `Role "${role}" can ${action} ${resource} without satisfying invariant "${invariant.name}" (${requiresKey}).`,
-                            fingerprint: permissionsFingerprint(policy, role, action, resource, invariant.definition),
+                            fingerprint: permissionsFingerprint(policy, role, action, resource, invariant.definition, ...guardKeys),
                         });
                     }
                 }
@@ -398,7 +409,7 @@ export async function scanPolicy(policy: EncodablePolicy): Promise<ScanResult> {
             // what most roles actually require.
             if (inferredGroup) {
                 const names = conditionInvariants.map((invariant) => invariant.name).sort();
-                const declaredConditions = conditionInvariants.map((invariant) => encoder.encodeCondition(invariant.requires!, symbols));
+                const declaredConditions = [...conditionInvariants.map((invariant) => encoder.encodeCondition(invariant.requires!, symbols)), ...guards];
                 const allDeclared = declaredConditions.length === 1 ? declaredConditions[0]! : z3Context.And(...declaredConditions);
                 const definitions = conditionInvariants.map((invariant) => invariant.definition).sort();
 
@@ -413,7 +424,7 @@ export async function scanPolicy(policy: EncodablePolicy): Promise<ScanResult> {
                             invariant: names.join('+'),
                             inferredRule: ruleKey,
                             description: `Most roles that can ${action} ${resource} require ${ruleKey}, which ${label}.`,
-                            fingerprint: hash({ action, resource, definitions, ruleKey }),
+                            fingerprint: hash({ action, resource, definitions, ruleKey, ...(guardKeys.length > 0 ? { guardKeys } : {}) }),
                         });
                     }
                 }
@@ -448,7 +459,7 @@ export async function scanPolicy(policy: EncodablePolicy): Promise<ScanResult> {
                         role, action, resource,
                         inferredRule: ruleKey,
                         description: `No invariant covers ${action} ${resource}. Most roles require ${ruleKey}; "${role}" can act without it.`,
-                        fingerprint: permissionsFingerprint(policy, role, action, resource),
+                        fingerprint: permissionsFingerprint(policy, role, action, resource, ...guardKeys),
                     });
                 }
             }

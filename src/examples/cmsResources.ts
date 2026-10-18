@@ -12,6 +12,7 @@ export function createCmsPolicyByResource() {
     return definePolicy(cmsSchema, ({ resource }) => {
         resource('article', (article) => {
             article.create(['writer']);
+            article.read({ writer: live, editor: live, publisher: live, compliance_officer: live });
             article.edit({
                 writer: draft,
                 editor: draft,
@@ -28,6 +29,7 @@ export function createCmsPolicyChained() {
     return definePolicy(cmsSchema, ({ resource }) => {
         resource('article')
             .can('create', ['writer'])
+            .can('read', ['writer', 'editor', 'publisher', 'compliance_officer'], live)
             .can('edit', ['writer', 'editor'], draft)
             .can('edit', ['compliance_officer'])
             .can('publish', ['publisher'])
@@ -41,7 +43,8 @@ export function createGovernedCmsPolicyByResource() {
     return definePolicy(governedCmsSchema, ({ resource }) => {
         resource('article', (article) => {
             article.create(['writer']);
-            article.edit({ writer: draft, editor: draft, compliance_officer: true });
+            article.read({ writer: live, editor: live, publisher: live, compliance_officer: live }); // public: no sign-in needed
+            article.edit({ writer: draft, editor: draft, compliance_officer: true }); // guarded: signed-in users only
             article.publish(['publisher']);
             article.unpublish({ publisher: live });
         });

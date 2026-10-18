@@ -54,19 +54,18 @@ function timeCan(permissionsByRole: PermissionsByRole) {
     const results: Record<string, { meanMicros: number, callsPerSec: number, grantRate: number }> = {};
     for (const rolesPerUser of [1, 3, 10, 50]) {
         const policy = buildPolicy(permissionsByRole);
-        const users = Array.from({ length: 200 }, (_, i) => `user${i}`);
-        for (const user of users) {
-            for (let j = 0; j < rolesPerUser; j++) {
-                policy.assignRole(user, roles[Math.floor(random() * roles.length)]!);
-            }
-        }
+        // users as their apps would load them: roles plus context attributes
+        const users = Array.from({ length: 200 }, () =>
+            Array.from({ length: rolesPerUser }, () => roles[Math.floor(random() * roles.length)]!));
         const requests = Array.from({ length: 10_000 }, () => ({
-            user: users[Math.floor(random() * users.length)]!,
+            actor: {
+                roles: users[Math.floor(random() * users.length)]!,
+                id: strings[Math.floor(random() * 2)], region: strings[Math.floor(random() * 2)], department: strings[Math.floor(random() * 2)],
+            },
             action: schema.actions[Math.floor(random() * schema.actions.length)]!,
             resource: makeResource(resources[Math.floor(random() * resources.length)]!),
-            context: { id: strings[Math.floor(random() * 2)], region: strings[Math.floor(random() * 2)], department: strings[Math.floor(random() * 2)] },
         }));
-        const call = (request: typeof requests[number]) => policy.can(request.user, request.action, request.resource as never, request.context as never);
+        const call = (request: typeof requests[number]) => policy.can(request.actor as never, request.action, request.resource as never);
 
         requests.forEach(call); // warm up the JIT
         const calls = 200_000;
