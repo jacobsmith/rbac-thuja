@@ -122,4 +122,42 @@ describe('PolicyEncoder', () => {
         solver.add(encoder.roleCanDo('publisher', 'edit', 'article', symbols));
         expect(await solver.check()).toEqual('unsat');
     });
+
+    it('encodes And/Or/Not to the equivalent Z3 formula', async () => {
+        const context = await z3Context();
+        const encoder = new PolicyEncoder(createCmsPolicy(), context);
+        const symbols = encoder.symbolsFor('article');
+        const published = symbols.resource['published'] as Bool;
+        const authorId = symbols.resource['authorId'] as Seq;
+        const actorId = symbols.context['id'] as Seq;
+
+        const encoded = encoder.encodeCondition({
+            type: 'Or', conditions: [
+                { type: 'And', conditions: [
+                    { type: 'LiteralExpression', property: 'published', operator: 'eq', value: false },
+                    { type: 'ContextExpression', property: 'authorId', operator: 'eq', contextProperty: 'id' },
+                ] },
+                { type: 'Not', condition: { type: 'LiteralExpression', property: 'authorId', operator: 'eq', value: 'bob' } },
+            ],
+        }, symbols);
+        const handWritten = context.Or(context.And(context.Not(published), authorId.eq(actorId)), context.Not(authorId.eq(context.String.val('bob'))));
+
+        const solver = new context.Solver();
+        solver.add(encoded.neq(handWritten)); // refutation
+        expect(await solver.check()).toEqual('unsat');
+    });
+
+    it('encodes empty And as true and empty Or as false', async () => {
+        const context = await z3Context();
+        const encoder = new PolicyEncoder(createCmsPolicy(), context);
+        const symbols = encoder.symbolsFor('article');
+
+        const solver = new context.Solver();
+        solver.add(context.Not(encoder.encodeCondition({ type: 'And', conditions: [] }, symbols)));
+        expect(await solver.check()).toEqual('unsat');
+
+        const solver2 = new context.Solver();
+        solver2.add(encoder.encodeCondition({ type: 'Or', conditions: [] }, symbols));
+        expect(await solver2.check()).toEqual('unsat');
+    });
 });

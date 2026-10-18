@@ -117,6 +117,48 @@ describe('roles', () => {
     });
 });
 
+describe('compound conditions', () => {
+    it('grants editing your own drafts, or anything as a reviewer', () => {
+        const policy = new Policy(cmsSchema);
+        policy.addRole('writer', [{
+            action: 'edit', resource: 'article', condition: {
+                type: 'Or', conditions: [
+                    { type: 'And', conditions: [
+                        { type: 'LiteralExpression', property: 'published', operator: 'eq', value: false },
+                        { type: 'ContextExpression', property: 'authorId', operator: 'eq', contextProperty: 'id' },
+                    ] },
+                    { type: 'Not', condition: { type: 'LiteralExpression', property: 'published', operator: 'eq', value: true } },
+                ],
+            },
+        }]);
+        policy.addRole('editor', [{
+            action: 'edit', resource: 'article', condition: {
+                type: 'Not', condition: { type: 'ContextExpression', property: 'authorId', operator: 'eq', contextProperty: 'id' },
+            },
+        }]);
+        policy.assignRole('alice', 'writer');
+        policy.assignRole('erin', 'editor');
+
+        expect(policy.can('alice', 'edit', { $type: 'article', published: false, authorId: 'alice' }, { id: 'alice' })).toBe(true);
+        expect(policy.can('alice', 'edit', { $type: 'article', published: true, authorId: 'alice' }, { id: 'alice' })).toBe(false);
+        // editors may edit other people's articles, but not when ownership can't be established
+        expect(policy.can('erin', 'edit', { $type: 'article', published: true, authorId: 'alice' }, { id: 'erin' })).toBe(true);
+        expect(policy.can('erin', 'edit', { $type: 'article', published: true, authorId: 'erin' }, { id: 'erin' })).toBe(false);
+        expect(policy.can('erin', 'edit', { $type: 'article', published: true }, { id: 'erin' })).toBe(false);
+    });
+
+    it('validates nested conditions at runtime', () => {
+        const policy = new Policy(cmsSchema);
+        const addUntyped = (condition: unknown) => policy.addRole('writer', [{ action: 'edit', resource: 'article', condition } as never]);
+
+        expect(() => addUntyped({ type: 'And', conditions: [{ type: 'Not', condition: { type: 'LiteralExpression', property: 'nope', operator: 'eq', value: true } }] }))
+            .toThrow(/unknown attribute "nope"/);
+        expect(() => addUntyped({ type: 'Or' })).toThrow(/needs a "conditions" array/);
+        expect(() => addUntyped({ type: 'Not' })).toThrow(/needs a "condition"/);
+        expect(() => addUntyped({ type: 'Xor', conditions: [] })).toThrow(/unknown condition type "Xor"/);
+    });
+});
+
 describe('validation', () => {
     it('rejects a resource attribute named "$type"', () => {
         expect(() => defineSchema({ actions: [], resources: { article: { $type: 'string' } }, context: {} }))

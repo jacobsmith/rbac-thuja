@@ -2,160 +2,26 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { conditionKey, evaluateCondition } from './conditions.js';
 import { ThujaVerificationError } from './errors.js';
-import { Policy } from './policy.js';
-import { defineSchema, type AnyCondition, type AnyPermission } from './schema.js';
+import { scanPolicy } from './scan.js';
+import {
+    bruteForceFindings,
+    buildPolicy,
+    countPermissions,
+    enumerator,
+    generateAtomicPermissions,
+    generateCompoundPermissions,
+} from './testing/stressPolicy.js';
 import type { ExceptionsFile } from './verify.js';
 
-// A large, deterministic policy: 50 roles (10 departments x 5 levels), 5 resource types,
-// 8 actions, and several hundred permissions. Most permissions follow one "house rule"
-// per action/resource; a few deliberately don't, which is what the scan has to find.
+// Large, deterministic policies: 50 roles (10 departments x 5 levels), 5 resource types,
+// 8 actions, several hundred permissions. Most permissions follow one "house rule" per
+// action/resource; some deliberately don't, and the scan has to find exactly those.
+// Z3's answer is checked against a brute-force oracle that never touches Z3.
 
-const DEPARTMENTS = ['editorial', 'finance', 'legal', 'sales', 'support', 'engineering', 'marketing', 'hr', 'compliance', 'ops'];
-const LEVELS = ['intern', 'associate', 'senior', 'lead', 'director'];
-const ROLES = DEPARTMENTS.flatMap((department) => LEVELS.map((level) => `${department}_${level}`));
-
-const schema = defineSchema({
-    roles: ROLES,
-    actions: ['create', 'read', 'update', 'delete', 'publish', 'archive', 'approve', 'export'],
-    resources: {
-        article: { published: 'boolean', archived: 'boolean', authorId: 'string', region: 'string', status: 'string' },
-        invoice: { approved: 'boolean', ownerId: 'string', department: 'string', region: 'string' },
-        comment: { hidden: 'boolean', authorId: 'string' },
-        report: { confidential: 'boolean', department: 'string', region: 'string' },
-        profile: { active: 'boolean', userId: 'string', department: 'string' },
-    },
-    context: { id: 'string', region: 'string', department: 'string' },
-});
-
-const literal = (property: string, value: boolean | string): AnyCondition => ({ type: 'LiteralExpression', property, operator: 'eq', value });
-const fromContext = (property: string, contextProperty: string): AnyCondition => ({ type: 'ContextExpression', property, operator: 'eq', contextProperty });
-
-// Candidate guards per resource; each action/resource pair picks one as its house rule.
-const GUARDS: Record<string, Array<AnyCondition>> = {
-    article: [literal('published', false), literal('archived', false), fromContext('authorId', 'id'), fromContext('region', 'region'), literal('status', 'draft'), literal('status', 'review')],
-    invoice: [literal('approved', false), fromContext('ownerId', 'id'), fromContext('department', 'department'), fromContext('region', 'region')],
-    comment: [literal('hidden', false), fromContext('authorId', 'id')],
-    report: [literal('confidential', false), fromContext('department', 'department'), fromContext('region', 'region')],
-    profile: [fromContext('userId', 'id'), fromContext('department', 'department'), literal('active', true)],
-};
-
-// mulberry32: small seeded PRNG so the generated policy is identical on every run.
-function prng(seed: number) {
-    return () => {
-        seed = (seed + 0x6D2B79F5) | 0;
-        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
-}
-
-function generatePermissions(seed = 20261018): Map<string, Array<AnyPermission>> {
-    const random = prng(seed);
-    const pick = <T>(items: ReadonlyArray<T>): T => items[Math.floor(random() * items.length)] as T;
-
-    const pairs = Object.keys(schema.resources).flatMap((resource) => schema.actions.map((action) => ({ resource, action })));
-    const houseRule = new Map(pairs.map(({ resource, action }) => [
-        `${action}|${resource}`,
-        // reading articles and comments is open to everyone who can read at all
-        action === 'read' && (resource === 'article' || resource === 'comment') ? true : pick(GUARDS[resource]!),
-    ]));
-
-    const permissionsByRole = new Map<string, Array<AnyPermission>>();
-    for (const role of ROLES) {
-        const permissions: Array<AnyPermission> = [];
-        const count = 6 + Math.floor(random() * 7); // 6-12 action/resource pairs per role
-        const chosen = [...pairs].sort(() => random() - 0.5).slice(0, count);
-
-        for (const { resource, action } of chosen) {
-            const rule = houseRule.get(`${action}|${resource}`)!;
-            const roll = random();
-            if (roll < 0.80) {
-                permissions.push({ action, resource, condition: rule });
-            } else if (roll < 0.87) {
-                permissions.push({ action, resource, condition: true }); // unconditional bypass
-            } else if (roll < 0.94) {
-                permissions.push({ action, resource, condition: pick(GUARDS[resource]!) }); // possibly a different rule
-            } else {
-                // the house rule OR'd with a second guard: still a bypass if the second differs
-                permissions.push({ action, resource, condition: rule });
-                permissions.push({ action, resource, condition: pick(GUARDS[resource]!) });
-            }
-        }
-        permissionsByRole.set(role, permissions);
-    }
-    return permissionsByRole;
-}
-
-function buildPolicy(permissionsByRole: Map<string, Array<AnyPermission>>) {
-    const policy = new Policy(schema);
-    for (const [role, permissions] of permissionsByRole) {
-        policy.addRole(role, permissions as never);
-    }
-    return policy;
-}
-
-/**
- * Independent oracle: enumerate every concrete resource/context assignment and use the
- * runtime evaluator (what `can()` uses) instead of Z3. Conditions are equalities, so each
- * string attribute only needs the literals that appear in the policy plus two fresh values.
- */
-function bruteForceFindings(permissionsByRole: Map<string, Array<AnyPermission>>): Set<string> {
-    const all = [...permissionsByRole.values()].flat();
-    const literals = [...new Set(all.flatMap(({ condition }) =>
-        condition !== true && condition.type === 'LiteralExpression' && typeof condition.value === 'string' ? [condition.value] : []))];
-    const stringDomain = ['v1', 'v2', ...literals];
-
-    const assignments = (attributes: Record<string, string>): Array<Record<string, boolean | string>> =>
-        Object.entries(attributes).reduce<Array<Record<string, boolean | string>>>(
-            (partials, [name, type]) => partials.flatMap((partial) =>
-                (type === 'boolean' ? [true, false] : stringDomain).map((value) => ({ ...partial, [name]: value }))),
-            [{}],
-        );
-
-    const findings = new Set<string>();
-    for (const [resource, attributes] of Object.entries(schema.resources)) {
-        const worlds = assignments(attributes).flatMap((resourceValue) =>
-            assignments(schema.context).map((contextValue) => ({ resourceValue, contextValue })));
-
-        for (const action of schema.actions) {
-            // the rule is whichever condition the most roles use (ties keep all; `true` is never a rule)
-            const rolesByCondition = new Map<string, { condition: AnyCondition, roles: Set<string> }>();
-            for (const [role, permissions] of permissionsByRole) {
-                for (const permission of permissions) {
-                    if (permission.action === action && permission.resource === resource) {
-                        const key = conditionKey(permission.condition);
-                        const entry = rolesByCondition.get(key) ?? { condition: permission.condition, roles: new Set<string>() };
-                        entry.roles.add(role);
-                        rolesByCondition.set(key, entry);
-                    }
-                }
-            }
-            const top = Math.max(0, ...[...rolesByCondition.values()].map((entry) => entry.roles.size));
-            const invariants = new Map([...rolesByCondition]
-                .filter(([, entry]) => entry.roles.size === top && entry.condition !== true)
-                .map(([key, entry]) => [key, entry.condition]));
-
-            for (const [role, permissions] of permissionsByRole) {
-                const relevant = permissions.filter((p) => p.action === action && p.resource === resource);
-                for (const [key, invariant] of invariants) {
-                    const bypass = worlds.some(({ resourceValue, contextValue }) =>
-                        relevant.some((p) => evaluateCondition(p.condition, resourceValue, contextValue))
-                        && !evaluateCondition(invariant, resourceValue, contextValue));
-                    if (bypass) {
-                        findings.add(`${role}|${action}|${resource}|${key}`);
-                    }
-                }
-            }
-        }
-    }
-    return findings;
-}
-
-describe('stress: 50 roles, hundreds of permissions', () => {
-    const permissionsByRole = generatePermissions();
-    const permissionCount = [...permissionsByRole.values()].reduce((sum, permissions) => sum + permissions.length, 0);
+describe('stress: 50 roles, atomic conditions', () => {
+    const permissionsByRole = generateAtomicPermissions();
+    const permissionCount = countPermissions(permissionsByRole);
 
     it('generates the intended scale', () => {
         expect(permissionsByRole.size).toEqual(50);
@@ -163,14 +29,12 @@ describe('stress: 50 roles, hundreds of permissions', () => {
     });
 
     it('finds exactly the bypasses a brute-force search over concrete values finds', async () => {
-        const policy = buildPolicy(permissionsByRole);
-
         const started = performance.now();
-        const findings = await policy.findBypasses();
+        const { findings, stats } = await scanPolicy(buildPolicy(permissionsByRole));
         const elapsed = performance.now() - started;
 
         const expected = bruteForceFindings(permissionsByRole);
-        console.log(`[stress] ${permissionsByRole.size} roles, ${permissionCount} permissions -> ${findings.length} findings in ${elapsed.toFixed(0)}ms`);
+        console.log(`[stress:atomic] ${permissionsByRole.size} roles, ${permissionCount} permissions -> ${findings.length} findings in ${elapsed.toFixed(0)}ms`, stats);
 
         expect(expected.size).toBeGreaterThan(0);
         expect(findings.map((finding) => finding.id)).toEqual([...expected].sort());
@@ -206,4 +70,52 @@ describe('stress: 50 roles, hundreds of permissions', () => {
         expect(problems.length).toBeGreaterThan(0);
         expect(problems.every((problem) => problem.kind === 'unapproved' && problem.id.startsWith(`${role}|delete|invoice|`))).toBe(true);
     }, 120_000);
+});
+
+describe('stress: 50 roles, compound And/Or/Not conditions', () => {
+    const { permissionsByRole, variants, houseRules } = generateCompoundPermissions();
+    const permissionCount = countPermissions(permissionsByRole);
+
+    it('generates the intended scale and mix', () => {
+        expect(permissionsByRole.size).toEqual(50);
+        expect(permissionCount).toBeGreaterThanOrEqual(400);
+        const counts = new Map<string, number>();
+        variants.forEach((variant) => counts.set(variant, (counts.get(variant) ?? 0) + 1));
+        for (const variant of ['exact', 'rewritten', 'split', 'stricter', 'looser', 'unconditional', 'unrelated']) {
+            expect(counts.get(variant) ?? 0, variant).toBeGreaterThan(0);
+        }
+    });
+
+    it('finds exactly the bypasses a brute-force search over concrete values finds', async () => {
+        const started = performance.now();
+        const { findings, stats } = await scanPolicy(buildPolicy(permissionsByRole));
+        const elapsed = performance.now() - started;
+
+        const oracleStarted = performance.now();
+        const expected = bruteForceFindings(permissionsByRole);
+        const oracleElapsed = performance.now() - oracleStarted;
+        console.log(`[stress:compound] ${permissionsByRole.size} roles, ${permissionCount} permissions -> ${findings.length} findings in ${elapsed.toFixed(0)}ms (oracle ${oracleElapsed.toFixed(0)}ms)`, stats);
+
+        expect(expected.size).toBeGreaterThan(0);
+        expect(findings.map((finding) => finding.id)).toEqual([...expected].sort());
+    }, 300_000);
+
+    it('flags deviating roles and never roles that wrote the rule differently or more strictly', async () => {
+        const { findings } = await scanPolicy(buildPolicy(permissionsByRole));
+        const flagged = new Map(findings.map((finding) => [`${finding.role}|${finding.action}|${finding.resource}`, finding]));
+        const { truthTable } = enumerator(permissionsByRole);
+
+        for (const [grant, variant] of variants) {
+            if (variant === 'exact' || variant === 'rewritten' || variant === 'split' || variant === 'stricter') {
+                expect(flagged.has(grant), `${grant} (${variant}) should not be flagged`).toBe(false);
+            }
+            // ...unless the generator happened to produce a house rule that always holds, e.g.
+            // `(!(active==true) || active==true)`: then unconditional access *is* the rule
+            const [, action, resource] = grant.split('|') as [string, string, string];
+            const rule = houseRules.get(`${action}|${resource}`)!;
+            if (variant === 'unconditional' && truthTable(rule, resource).includes('0')) {
+                expect(flagged.has(grant), `${grant} (unconditional) should be flagged`).toBe(true);
+            }
+        }
+    }, 300_000);
 });

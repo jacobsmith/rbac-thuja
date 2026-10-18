@@ -1,0 +1,290 @@
+// Generators and a brute-force oracle for the stress tests. Not part of the build.
+
+import { conditionKey, evaluateCondition, normalizeCondition } from '../conditions.js';
+import { Policy } from '../policy.js';
+import { defineSchema, type AnyCondition, type AnyPermission } from '../schema.js';
+
+// 50 roles: 10 departments x 5 levels.
+const DEPARTMENTS = ['editorial', 'finance', 'legal', 'sales', 'support', 'engineering', 'marketing', 'hr', 'compliance', 'ops'];
+const LEVELS = ['intern', 'associate', 'senior', 'lead', 'director'];
+export const ROLES = DEPARTMENTS.flatMap((department) => LEVELS.map((level) => `${department}_${level}`));
+
+export const schema = defineSchema({
+    roles: ROLES,
+    actions: ['create', 'read', 'update', 'delete', 'publish', 'archive', 'approve', 'export'],
+    resources: {
+        article: { published: 'boolean', archived: 'boolean', authorId: 'string', region: 'string', status: 'string' },
+        invoice: { approved: 'boolean', ownerId: 'string', department: 'string', region: 'string' },
+        comment: { hidden: 'boolean', authorId: 'string' },
+        report: { confidential: 'boolean', department: 'string', region: 'string' },
+        profile: { active: 'boolean', userId: 'string', department: 'string' },
+    },
+    context: { id: 'string', region: 'string', department: 'string' },
+});
+
+export type PermissionsByRole = Map<string, Array<AnyPermission>>;
+
+export const literal = (property: string, value: boolean | string): AnyCondition => ({ type: 'LiteralExpression', property, operator: 'eq', value });
+export const fromContext = (property: string, contextProperty: string): AnyCondition => ({ type: 'ContextExpression', property, operator: 'eq', contextProperty });
+const and = (...conditions: Array<AnyCondition>): AnyCondition => ({ type: 'And', conditions });
+const or = (...conditions: Array<AnyCondition>): AnyCondition => ({ type: 'Or', conditions });
+const not = (condition: AnyCondition): AnyCondition => ({ type: 'Not', condition });
+
+// Atomic guards per resource. Each resource attribute is compared with at most one context
+// attribute, which the oracle relies on (see bruteForceFindings).
+export const GUARDS: Record<string, Array<AnyCondition>> = {
+    article: [literal('published', false), literal('archived', false), fromContext('authorId', 'id'), fromContext('region', 'region'), literal('status', 'draft'), literal('status', 'review')],
+    invoice: [literal('approved', false), fromContext('ownerId', 'id'), fromContext('department', 'department'), fromContext('region', 'region')],
+    comment: [literal('hidden', false), fromContext('authorId', 'id')],
+    report: [literal('confidential', false), fromContext('department', 'department'), fromContext('region', 'region')],
+    profile: [fromContext('userId', 'id'), fromContext('department', 'department'), literal('active', true)],
+};
+
+const PAIRS = Object.keys(schema.resources).flatMap((resource) => schema.actions.map((action) => ({ resource, action })));
+
+// mulberry32: small seeded PRNG so generated policies are identical on every run.
+export function prng(seed: number) {
+    return () => {
+        seed = (seed + 0x6D2B79F5) | 0;
+        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
+/** Atomic conditions only: one house rule per action/resource, with planted deviations. */
+export function generateAtomicPermissions(seed = 20261018): PermissionsByRole {
+    const random = prng(seed);
+    const pick = <T>(items: ReadonlyArray<T>): T => items[Math.floor(random() * items.length)] as T;
+
+    const houseRule = new Map(PAIRS.map(({ resource, action }) => [
+        `${action}|${resource}`,
+        // reading articles and comments is open to everyone who can read at all
+        action === 'read' && (resource === 'article' || resource === 'comment') ? true : pick(GUARDS[resource]!),
+    ]));
+
+    const permissionsByRole: PermissionsByRole = new Map();
+    for (const role of ROLES) {
+        const permissions: Array<AnyPermission> = [];
+        const count = 6 + Math.floor(random() * 7); // 6-12 action/resource pairs per role
+        const chosen = [...PAIRS].sort(() => random() - 0.5).slice(0, count);
+
+        for (const { resource, action } of chosen) {
+            const rule = houseRule.get(`${action}|${resource}`)!;
+            const roll = random();
+            if (roll < 0.80) {
+                permissions.push({ action, resource, condition: rule });
+            } else if (roll < 0.87) {
+                permissions.push({ action, resource, condition: true }); // unconditional bypass
+            } else if (roll < 0.94) {
+                permissions.push({ action, resource, condition: pick(GUARDS[resource]!) }); // possibly a different rule
+            } else {
+                // the house rule OR'd with a second guard: still a bypass if the second differs
+                permissions.push({ action, resource, condition: rule });
+                permissions.push({ action, resource, condition: pick(GUARDS[resource]!) });
+            }
+        }
+        permissionsByRole.set(role, permissions);
+    }
+    return permissionsByRole;
+}
+
+export type Variant = 'exact' | 'rewritten' | 'split' | 'stricter' | 'looser' | 'unconditional' | 'unrelated';
+
+/**
+ * Compound conditions: each action/resource gets a nested And/Or/Not house rule, and each
+ * role writes it one of several ways. `variants` records which, so tests can assert intent:
+ * rewritten/split/stricter roles shouldn't be flagged; looser/unconditional ones should.
+ */
+export function generateCompoundPermissions(seed = 20261019): { permissionsByRole: PermissionsByRole, variants: Map<string, Variant>, houseRules: Map<string, AnyCondition> } {
+    const random = prng(seed);
+    const pick = <T>(items: ReadonlyArray<T>): T => items[Math.floor(random() * items.length)] as T;
+    const shuffle = <T>(items: ReadonlyArray<T>): Array<T> => [...items].sort(() => random() - 0.5);
+
+    // A random compound condition over a resource's guards, `depth` levels deep.
+    const compound = (resource: string, depth: number): AnyCondition => {
+        if (depth === 0) {
+            const atom = pick(GUARDS[resource]!);
+            return random() < 0.2 ? not(atom) : atom;
+        }
+        const width = 2 + Math.floor(random() * 2);
+        const children = Array.from({ length: width }, () => compound(resource, random() < 0.5 ? depth - 1 : 0));
+        return random() < 0.5 ? and(...children) : or(...children);
+    };
+
+    // Logically equivalent rewrites the normalizer can't see through on its own (De Morgan,
+    // double negation, reordering), so recognising them needs Z3.
+    const rewrite = (condition: AnyCondition): AnyCondition => {
+        if (condition === true) {
+            return true;
+        }
+        switch (condition.type) {
+            case 'And':
+            case 'Or': {
+                const children = shuffle(condition.conditions.map(rewrite));
+                if (random() < 0.5) {
+                    const dual = children.map(not);
+                    return not(condition.type === 'And' ? or(...dual) : and(...dual));
+                }
+                return condition.type === 'And' ? and(...children) : or(...children);
+            }
+            case 'Not': {
+                return not(rewrite(condition.condition));
+            }
+            default: {
+                return random() < 0.3 ? not(not(condition)) : condition;
+            }
+        }
+    };
+
+    const houseRules = new Map(PAIRS.map(({ resource, action }) => [`${action}|${resource}`, compound(resource, 2)]));
+    const permissionsByRole: PermissionsByRole = new Map();
+    const variants = new Map<string, Variant>();
+
+    for (const role of ROLES) {
+        const permissions: Array<AnyPermission> = [];
+        const count = 6 + Math.floor(random() * 7);
+
+        for (const { resource, action } of shuffle(PAIRS).slice(0, count)) {
+            const rule = houseRules.get(`${action}|${resource}`)!;
+            const extra = pick(GUARDS[resource]!);
+            const roll = random();
+            let variant: Variant;
+
+            if (roll < 0.62) {
+                variant = 'exact';
+                permissions.push({ action, resource, condition: rule });
+            } else if (roll < 0.72) {
+                variant = 'rewritten';
+                permissions.push({ action, resource, condition: rewrite(rule) });
+            } else if (roll < 0.76 && rule !== true && rule.type === 'Or') {
+                variant = 'split'; // one permission per disjunct: the union is the rule
+                rule.conditions.forEach((condition) => permissions.push({ action, resource, condition }));
+            } else if (roll < 0.83) {
+                variant = 'stricter';
+                permissions.push({ action, resource, condition: and(rule, extra) });
+            } else if (roll < 0.91) {
+                variant = 'looser';
+                permissions.push({ action, resource, condition: or(rule, extra) });
+            } else if (roll < 0.95) {
+                variant = 'unconditional';
+                permissions.push({ action, resource, condition: true });
+            } else {
+                variant = 'unrelated';
+                permissions.push({ action, resource, condition: compound(resource, 2) });
+            }
+            variants.set(`${role}|${action}|${resource}`, variant);
+        }
+        permissionsByRole.set(role, permissions);
+    }
+    return { permissionsByRole, variants, houseRules };
+}
+
+export function buildPolicy(permissionsByRole: PermissionsByRole) {
+    const policy = new Policy(schema);
+    for (const [role, permissions] of permissionsByRole) {
+        policy.addRole(role, permissions as never);
+    }
+    return policy;
+}
+
+export function countPermissions(permissionsByRole: PermissionsByRole) {
+    return [...permissionsByRole.values()].reduce((sum, permissions) => sum + permissions.length, 0);
+}
+
+/**
+ * Independent oracle for `findBypasses`: no Z3, no normalizer-based equivalence. It
+ * enumerates every concrete resource/context assignment and uses the runtime evaluator.
+ *
+ * Conditions only compare for equality, so a string attribute only needs the literals the
+ * policy uses plus enough fresh values to make any compared pair equal or unequal. Each
+ * attribute here is compared with at most one context attribute (see GUARDS), so two
+ * fresh values suffice. With every assignment enumerated, two conditions are equivalent
+ * exactly when their truth tables match.
+ */
+export function bruteForceFindings(permissionsByRole: PermissionsByRole): Set<string> {
+    const findings = new Set<string>();
+    const { truthTable } = enumerator(permissionsByRole);
+
+    for (const resource of Object.keys(schema.resources)) {
+        for (const action of schema.actions) {
+            // each role's effective condition: the Or of its permissions here
+            const roleRules = new Map<string, { key: string, table: string }>();
+            for (const [role, permissions] of permissionsByRole) {
+                const conditions = permissions.filter((p) => p.action === action && p.resource === resource).map((p) => p.condition);
+                if (conditions.length > 0) {
+                    const effective: AnyCondition = { type: 'Or', conditions };
+                    roleRules.set(role, { key: conditionKey(normalizeCondition(effective)), table: truthTable(effective, resource) });
+                }
+            }
+
+            // classes of equivalent rules, named after their most common spelling (ties: shortest, then alphabetical)
+            const classes = new Map<string, { roles: number, spellings: Map<string, number> }>();
+            for (const { key, table } of roleRules.values()) {
+                const entry = classes.get(table) ?? { roles: 0, spellings: new Map<string, number>() };
+                entry.roles++;
+                entry.spellings.set(key, (entry.spellings.get(key) ?? 0) + 1);
+                classes.set(table, entry);
+            }
+            const top = Math.max(0, ...[...classes.values()].map((entry) => entry.roles));
+            const rules = [...classes]
+                .filter(([table, entry]) => entry.roles === top && table.includes('0')) // an always-true rule is no rule
+                .map(([table, entry]) => {
+                    const [name] = [...entry.spellings].sort(([a, countA], [b, countB]) => countB - countA || a.length - b.length || (a < b ? -1 : a > b ? 1 : 0))[0]!;
+                    return { name, table };
+                });
+
+            for (const [role, rule] of roleRules) {
+                for (const { name, table } of rules) {
+                    // a bypass: some assignment where the role grants but the rule doesn't hold
+                    if ([...rule.table].some((bit, i) => bit === '1' && table[i] === '0')) {
+                        findings.add(`${role}|${action}|${resource}|${name}`);
+                    }
+                }
+            }
+        }
+    }
+    return findings;
+}
+
+/** Truth tables over every concrete assignment for a resource (see bruteForceFindings). */
+export function enumerator(permissionsByRole: PermissionsByRole) {
+    const all = [...permissionsByRole.values()].flat();
+    const literals = new Set<string>();
+    const collect = (condition: AnyCondition) => {
+        if (condition === true) { return; }
+        switch (condition.type) {
+            case 'And': case 'Or': { condition.conditions.forEach(collect); return; }
+            case 'Not': { collect(condition.condition); return; }
+            case 'LiteralExpression': { if (typeof condition.value === 'string') { literals.add(condition.value); } return; }
+            default: { return; }
+        }
+    };
+    all.forEach((permission) => collect(permission.condition));
+    const stringDomain = ['v1', 'v2', ...literals];
+
+    const assignments = (attributes: Record<string, string>): Array<Record<string, boolean | string>> =>
+        Object.entries(attributes).reduce<Array<Record<string, boolean | string>>>(
+            (partials, [name, type]) => partials.flatMap((partial) =>
+                (type === 'boolean' ? [true, false] : stringDomain).map((value) => ({ ...partial, [name]: value }))),
+            [{}],
+        );
+
+    const worldsByResource = new Map<string, Array<{ resourceValue: Record<string, boolean | string>, contextValue: Record<string, boolean | string> }>>();
+    const worldsFor = (resource: string) => {
+        let worlds = worldsByResource.get(resource);
+        if (!worlds) {
+            const attributes = (schema.resources as Record<string, Record<string, string>>)[resource]!;
+            worlds = assignments(attributes).flatMap((resourceValue) =>
+                assignments(schema.context).map((contextValue) => ({ resourceValue, contextValue })));
+            worldsByResource.set(resource, worlds);
+        }
+        return worlds;
+    };
+
+    return {
+        worldCount: (resource: string) => worldsFor(resource).length,
+        truthTable: (condition: AnyCondition, resource: string) => worldsFor(resource)
+            .map(({ resourceValue, contextValue }) => evaluateCondition(condition, resourceValue, contextValue) ? '1' : '0').join(''),
+    };
+}

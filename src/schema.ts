@@ -57,7 +57,20 @@ export type ContextExpression<A extends Attributes, C extends Attributes> = {
     [P in keyof A & string]: { type: 'ContextExpression', property: P, operator: 'eq', contextProperty: KeysOfType<C, A[P]> }
 }[keyof A & string];
 
-export type Condition<A extends Attributes, C extends Attributes> = true | LiteralExpression<A> | ContextExpression<A, C>;
+export type AtomicCondition<A extends Attributes, C extends Attributes> = LiteralExpression<A> | ContextExpression<A, C>;
+
+// Compound conditions nest arbitrarily. An empty `And` is always true and an empty `Or`
+// is never true, matching the usual logical identities.
+export type AndCondition<A extends Attributes, C extends Attributes> = { type: 'And', conditions: ReadonlyArray<Condition<A, C>> };
+export type OrCondition<A extends Attributes, C extends Attributes> = { type: 'Or', conditions: ReadonlyArray<Condition<A, C>> };
+export type NotCondition<A extends Attributes, C extends Attributes> = { type: 'Not', condition: Condition<A, C> };
+
+export type Condition<A extends Attributes, C extends Attributes> =
+    | true
+    | AtomicCondition<A, C>
+    | AndCondition<A, C>
+    | OrCondition<A, C>
+    | NotCondition<A, C>;
 
 export type Permission<S extends PolicySchema> = {
     [R in ResourceName<S>]: { action: Action<S>, resource: R, condition: Condition<S['resources'][R], S['context']> }
@@ -72,8 +85,13 @@ export type ContextValue<S extends PolicySchema> = {
 };
 
 // Schema-agnostic shapes used internally once the consumer's types have done their job.
-export type AnyCondition =
-    | true
+export type AnyAtomicCondition =
     | { type: 'LiteralExpression', property: string, operator: 'eq', value: boolean | string }
     | { type: 'ContextExpression', property: string, operator: 'eq', contextProperty: string };
+export type AnyCondition =
+    | true
+    | AnyAtomicCondition
+    | { type: 'And', conditions: ReadonlyArray<AnyCondition> }
+    | { type: 'Or', conditions: ReadonlyArray<AnyCondition> }
+    | { type: 'Not', condition: AnyCondition };
 export type AnyPermission = { action: string, resource: string, condition: AnyCondition };

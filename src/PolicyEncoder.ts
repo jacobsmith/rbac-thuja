@@ -58,6 +58,20 @@ export class PolicyEncoder<Role extends string = string> {
             return this.z3Context.Bool.val(true);
         }
 
+        switch (condition.type) {
+            case 'And': {
+                const children = condition.conditions.map((child) => this.encodeCondition(child, symbols));
+                return children.length === 0 ? this.z3Context.Bool.val(true) : this.z3Context.And(...children);
+            }
+            case 'Or': {
+                const children = condition.conditions.map((child) => this.encodeCondition(child, symbols));
+                return children.length === 0 ? this.z3Context.Bool.val(false) : this.z3Context.Or(...children);
+            }
+            case 'Not': {
+                return this.z3Context.Not(this.encodeCondition(condition.condition, symbols));
+            }
+        }
+
         const resourceAttribute = symbols.resource[condition.property];
         if (!resourceAttribute) {
             throw new Error(`No symbol for resource attribute "${condition.property}".`);

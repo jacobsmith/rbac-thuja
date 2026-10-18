@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { cmsSchema, createCmsPolicy } from './examples/cms.js';
 import { Policy } from './policy.js';
-import { inferInvariants, permissionsFingerprint } from './scan.js';
+import { inferInvariants, permissionsFingerprint, scanPolicy } from './scan.js';
 
 describe('inferInvariants', () => {
-    it('groups every non-trivial condition by action and resource', () => {
-        const groups = [...inferInvariants(createCmsPolicy()).values()]
+    it('groups every non-trivial condition by action and resource', async () => {
+        const groups = [...(await inferInvariants(createCmsPolicy())).values()]
             .map((group) => [group.action, group.resource, [...group.conditions.keys()]]);
 
         expect(groups).toEqual([
@@ -49,7 +49,7 @@ describe('findBypasses', () => {
             { action: 'create', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' } },
         ]);
 
-        expect(inferInvariants(policy).size).toEqual(0);
+        expect((await inferInvariants(policy)).size).toEqual(0);
         expect(await policy.findBypasses()).toEqual([]);
     });
 
@@ -93,6 +93,102 @@ describe('findBypasses', () => {
 
         expect(await policy.findBypasses()).toEqual([]);
         expect(() => policy.addRole('editor', [])).not.toThrow();
+    });
+});
+
+describe('findBypasses with compound conditions', () => {
+    const unpublished = { type: 'LiteralExpression', property: 'published', operator: 'eq', value: false } as const;
+    const published = { type: 'LiteralExpression', property: 'published', operator: 'eq', value: true } as const;
+    const owner = { type: 'ContextExpression', property: 'authorId', operator: 'eq', contextProperty: 'id' } as const;
+    const ownDraft = { type: 'And', conditions: [unpublished, owner] } as const;
+    type Role = 'writer' | 'editor' | 'publisher' | 'compliance_officer';
+
+    function policyWith(roles: Partial<Record<Role, Array<unknown>>>) {
+        const policy = new Policy(cmsSchema);
+        for (const [role, permissions] of Object.entries(roles)) {
+            policy.addRole(role as Role, permissions as never);
+        }
+        return policy;
+    }
+    const edit = (condition: unknown) => ({ action: 'edit', resource: 'article', condition });
+    const ids = async (policy: ReturnType<typeof policyWith>) => (await policy.findBypasses()).map((finding) => finding.id);
+
+    it('flags a role that skips part of a compound rule', async () => {
+        const policy = policyWith({
+            writer: [edit(ownDraft)],
+            editor: [edit(ownDraft)],
+            publisher: [edit(unpublished)], // drops the ownership check
+        });
+
+        expect(await ids(policy)).toEqual(['publisher|edit|article|(authorId==context.id && published==false)']);
+    });
+
+    it('does not flag a stricter role', async () => {
+        const policy = policyWith({
+            writer: [edit(unpublished)],
+            editor: [edit(unpublished)],
+            publisher: [edit(ownDraft)], // unpublished AND owner implies unpublished
+        });
+
+        expect(await ids(policy)).toEqual([]);
+    });
+
+    it('treats logically equivalent spellings as the same rule (De Morgan, via Z3)', async () => {
+        const policy = policyWith({
+            writer: [edit(ownDraft)],
+            editor: [edit({ type: 'Not', condition: { type: 'Or', conditions: [published, { type: 'Not', condition: owner }] } })],
+            publisher: [edit(unpublished)],
+        });
+
+        // writer and editor are one vote each for the same rule, named after the first spelling
+        expect(await ids(policy)).toEqual(['publisher|edit|article|(authorId==context.id && published==false)']);
+    });
+
+    it('treats a rule split across several permissions as their Or', async () => {
+        const either = { type: 'Or', conditions: [unpublished, owner] } as const;
+        const policy = policyWith({
+            writer: [edit(either)],
+            editor: [edit(unpublished), edit(owner)],
+            publisher: [edit(unpublished)],
+        });
+
+        expect(await ids(policy)).toEqual([]);
+    });
+
+    it('treats a rule that never holds as "nobody may do this"', async () => {
+        const never = { type: 'And', conditions: [published, unpublished] } as const;
+        const policy = policyWith({
+            writer: [edit(never)],
+            editor: [edit(never)],
+            publisher: [edit(owner)],
+        });
+
+        expect(await ids(policy)).toEqual(['publisher|edit|article|(published==false && published==true)']);
+    });
+
+    it('treats a rule that always holds as no rule', async () => {
+        const always = { type: 'Or', conditions: [published, unpublished] } as const;
+        const policy = policyWith({
+            writer: [edit(always)],
+            editor: [edit(always)],
+            publisher: [edit(owner)],
+        });
+
+        expect(await ids(policy)).toEqual([]);
+    });
+
+    it('reports how much work the scan did', async () => {
+        const policy = policyWith({
+            writer: [edit(ownDraft)],
+            editor: [edit({ type: 'And', conditions: [owner, unpublished] })],
+            publisher: [edit(unpublished)],
+            compliance_officer: [edit(true)],
+        });
+
+        const { stats } = await scanPolicy(policy);
+
+        // writer/editor normalize to the same key and are skipped; publisher and compliance_officer are checked
+        expect(stats).toMatchObject({ groups: 1, solverChecks: 2, skippedChecks: 2 });
     });
 });
 
