@@ -86,7 +86,7 @@ describe('PolicyEncoder', () => {
     it('finds a role combination that can edit an article they do not own', async () => {
         // writer is ownership-gated; compliance_officer is an unconditional carve-out that
         // never checks ownership. That's the bypass we expect Z3 to find.
-        const policy = new Policy<typeof cmsSchema, 'writer' | 'compliance_officer'>(cmsSchema);
+        const policy = new Policy(cmsSchema);
         policy.addRole('writer', [
             { action: 'edit', resource: 'article', condition: { property: 'authorId', operator: 'eq', contextProperty: 'id', type: 'ContextExpression' } }
         ]);

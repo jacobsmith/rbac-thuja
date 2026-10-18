@@ -1,6 +1,6 @@
 import { evaluateCondition, validatePermission } from "./conditions.js";
 import { ImmutableRolesError } from "./errors.js";
-import { validateSchema, type Action, type AnyPermission, type ContextValue, type Permission, type PolicySchema, type ResourceValue } from "./schema.js";
+import { validateSchema, type Action, type AnyPermission, type ContextValue, type Permission, type PolicySchema, type ResourceValue, type RoleName } from "./schema.js";
 // Type-only: the scan/verify modules (and Z3 behind them) are loaded on demand so
 // apps that only call `can()` never pay for them.
 import type { Finding } from "./scan.js";
@@ -20,10 +20,10 @@ export class RbacBitVector<Role> {
     }
 }
 
-export class Policy<S extends PolicySchema, Role extends string = string> {
+export class Policy<S extends PolicySchema> {
     public readonly schema: S;
-    private rolePermissions: Map<Role, Array<AnyPermission>> = new Map();
-    private userRoles: Map<UserId, Array<Role>> = new Map();
+    private rolePermissions: Map<RoleName<S>, Array<AnyPermission>> = new Map();
+    private userRoles: Map<UserId, Array<RoleName<S>>> = new Map();
     private roleBitVectorsAccessed = false;
 
     constructor(schema: S) {
@@ -31,17 +31,19 @@ export class Policy<S extends PolicySchema, Role extends string = string> {
         this.schema = schema;
     }
 
-    addRole(role: Role, permissions: Array<Permission<S>>) {
+    addRole(role: RoleName<S>, permissions: Array<Permission<S>>) {
         if (this.roleBitVectorsAccessed) {
             throw new ImmutableRolesError();
         }
+        this.assertDeclaredRole(role);
         // Permission<S> is a mapped type TS can't relate to AnyPermission while S is generic.
         const anyPermissions = permissions as unknown as Array<AnyPermission>;
         anyPermissions.forEach((permission) => validatePermission(this.schema, role, permission));
         this.rolePermissions.set(role, anyPermissions);
     }
 
-    assignRole(user: UserId, role: Role) {
+    assignRole(user: UserId, role: RoleName<S>) {
+        this.assertDeclaredRole(role);
         const existingRoles = this.userRoles.get(user);
         if (existingRoles) {
             this.userRoles.set(user, [...existingRoles, role]);
@@ -50,12 +52,18 @@ export class Policy<S extends PolicySchema, Role extends string = string> {
         this.userRoles.set(user, [role]);
     }
 
+    private assertDeclaredRole(role: string) {
+        if (this.schema.roles && !this.schema.roles.includes(role)) {
+            throw new Error(`Unknown role "${role}"; the schema declares: ${this.schema.roles.join(", ")}.`);
+        }
+    }
+
     /** Roles in a stable (sorted) order. */
-    getRoles(): Array<Role> {
+    getRoles(): Array<RoleName<S>> {
         return [...this.rolePermissions.keys()].sort();
     }
 
-    getPermissions(role: Role): ReadonlyArray<AnyPermission> {
+    getPermissions(role: RoleName<S>): ReadonlyArray<AnyPermission> {
         return this.rolePermissions.get(role) ?? [];
     }
 
@@ -75,11 +83,11 @@ export class Policy<S extends PolicySchema, Role extends string = string> {
         ));
     }
 
-    getRoleBitVectors(): Array<RbacBitVector<Role>> {
+    getRoleBitVectors(): Array<RbacBitVector<RoleName<S>>> {
         const roles = this.getRoles();
         this.roleBitVectorsAccessed = true;
 
-        return roles.map((role, i) => new RbacBitVector<Role>(role, roles.length, i));
+        return roles.map((role, i) => new RbacBitVector<RoleName<S>>(role, roles.length, i));
     }
 
     /**

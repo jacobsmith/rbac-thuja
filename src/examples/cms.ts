@@ -1,7 +1,8 @@
 import { Policy } from "../policy.js";
-import { defineSchema } from "../schema.js";
+import { defineSchema, type RoleName } from "../schema.js";
 
 export const cmsSchema = defineSchema({
+    roles: ['writer', 'editor', 'publisher', 'compliance_officer'],
     actions: ['create', 'edit', 'publish', 'unpublish'],
     resources: {
         article: { published: 'boolean', authorId: 'string' },
@@ -9,10 +10,10 @@ export const cmsSchema = defineSchema({
     context: { id: 'string' },
 });
 
-export type CMSRole = 'writer' | 'publisher' | 'editor' | 'compliance_officer';
+export type CMSRole = RoleName<typeof cmsSchema>;
 
 export function createCmsPolicy() {
-    const policy = new Policy<typeof cmsSchema, CMSRole>(cmsSchema);
+    const policy = new Policy(cmsSchema);
     policy.addRole('writer', [
         { action: 'create', resource: 'article', condition: true },
         { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' } },

@@ -13,6 +13,7 @@ export type {
     PolicySchema,
     ResourceName,
     ResourceValue,
+    RoleName,
 } from "./schema.js";
 export { ImmutableRolesError, ThujaVerificationError, type VerificationProblem, type VerificationProblemKind } from "./errors.js";
 export type { Finding } from "./scan.js";

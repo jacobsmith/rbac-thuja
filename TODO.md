@@ -142,7 +142,7 @@ real approval gate. The file records the decision; code review enforces it.
       and have Thuja derive both the TS types and the Z3 sorts/constants
       from it.
 - [x] **`Policy` class** as the public entry point (replacing
-      `CmsRbac`/`Encodable` naming), generic over role and schema.
+      `CmsRbac`/`Encodable` naming), generic over the schema only; role names come from the optional `roles` list in the schema (`string` when omitted).
 - [x] **Thuja owns Z3.** `init()`, `Context` creation and symbolic
       constants all stay internal; consumers never import `z3-solver`.
 - [x] **Keep Z3 off the runtime path.** Apps calling `policy.can()` in

@@ -26,7 +26,7 @@ describe('findBypasses', () => {
     });
 
     it('flags a role whose condition contradicts the inferred invariant, not just `true`', async () => {
-        const policy = new Policy<typeof cmsSchema, 'writer' | 'editor'>(cmsSchema);
+        const policy = new Policy(cmsSchema);
         policy.addRole('writer', [
             { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: true, type: 'LiteralExpression' } },
         ]);
@@ -44,7 +44,7 @@ describe('findBypasses', () => {
     });
 
     it('flags ownership bypasses through context expressions', async () => {
-        const policy = new Policy<typeof cmsSchema, 'writer' | 'compliance_officer'>(cmsSchema);
+        const policy = new Policy(cmsSchema);
         policy.addRole('writer', [
             { action: 'edit', resource: 'article', condition: { property: 'authorId', operator: 'eq', contextProperty: 'id', type: 'ContextExpression' } },
         ]);
@@ -58,7 +58,7 @@ describe('findBypasses', () => {
     });
 
     it('reports nothing for a consistent policy and does not lock its roles', async () => {
-        const policy = new Policy<typeof cmsSchema, 'writer' | 'editor'>(cmsSchema);
+        const policy = new Policy(cmsSchema);
         policy.addRole('writer', [
             { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' } },
         ]);

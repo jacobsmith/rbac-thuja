@@ -50,7 +50,7 @@ describe('verifyNoUnapprovedBypasses', () => {
     });
 
     it('passes for a consistent policy with no exceptions file', async () => {
-        const policy = new Policy<typeof cmsSchema, 'writer'>(cmsSchema);
+        const policy = new Policy(cmsSchema);
         policy.addRole('writer', [{ action: 'create', resource: 'article', condition: true }]);
 
         await expect(policy.verifyNoUnapprovedBypasses({ exceptionsFile, update: false })).resolves.toBeDefined();

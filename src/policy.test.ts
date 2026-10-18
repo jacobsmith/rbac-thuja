@@ -57,7 +57,7 @@ describe('roles', () => {
     });
 
     it('restricts editing to the resource author via a context expression', () => {
-        const policy = new Policy<typeof cmsSchema, 'writer'>(cmsSchema);
+        const policy = new Policy(cmsSchema);
         policy.addRole('writer', [
             { action: 'edit', resource: 'article', condition: { property: 'authorId', operator: 'eq', contextProperty: 'id', type: 'ContextExpression' } }
         ]);
@@ -71,7 +71,7 @@ describe('roles', () => {
     });
 
     it('fails closed when a compared attribute is missing on both sides', () => {
-        const policy = new Policy<typeof cmsSchema, 'writer'>(cmsSchema);
+        const policy = new Policy(cmsSchema);
         policy.addRole('writer', [
             { action: 'edit', resource: 'article', condition: { property: 'authorId', operator: 'eq', contextProperty: 'id', type: 'ContextExpression' } }
         ]);
@@ -90,7 +90,7 @@ describe('roles', () => {
             },
             context: {},
         });
-        const policy = new Policy<typeof schema, 'moderator'>(schema);
+        const policy = new Policy(schema);
         policy.addRole('moderator', [
             { action: 'edit', resource: 'comment', condition: { property: 'locked', operator: 'eq', value: false, type: 'LiteralExpression' } },
         ]);
@@ -106,7 +106,7 @@ describe('roles', () => {
             resources: { article: { status: 'string' } },
             context: {},
         });
-        const policy = new Policy<typeof schema, 'writer'>(schema);
+        const policy = new Policy(schema);
         policy.addRole('writer', [
             { action: 'edit', resource: 'article', condition: { property: 'status', operator: 'eq', value: 'draft', type: 'LiteralExpression' } },
         ]);
@@ -123,8 +123,29 @@ describe('validation', () => {
             .toThrow(/reserved attribute "\$type"/);
     });
 
+    it('rejects duplicate declared roles', () => {
+        expect(() => defineSchema({ roles: ['writer', 'writer'], actions: [], resources: {}, context: {} }))
+            .toThrow(/duplicate roles/);
+    });
+
+    it('rejects roles the schema does not declare at runtime', () => {
+        const policy = new Policy(cmsSchema);
+        const untypedRole = 'wirter' as never;
+
+        expect(() => policy.addRole(untypedRole, [])).toThrow(/Unknown role "wirter"/);
+        expect(() => policy.assignRole('alice', untypedRole)).toThrow(/Unknown role "wirter"/);
+    });
+
+    it('accepts any role when the schema declares none', () => {
+        const schema = defineSchema({ actions: ['edit'], resources: { article: {} }, context: {} });
+        const policy = new Policy(schema);
+        const roleFromDatabase: string = 'whatever';
+
+        expect(() => policy.addRole(roleFromDatabase, [{ action: 'edit', resource: 'article', condition: true }])).not.toThrow();
+    });
+
     it('rejects permissions that do not match the schema at runtime', () => {
-        const policy = new Policy<typeof cmsSchema, 'writer'>(cmsSchema);
+        const policy = new Policy(cmsSchema);
         const addUntyped = (permission: unknown) => policy.addRole('writer', [permission as never]);
 
         expect(() => addUntyped({ action: 'delete', resource: 'article', condition: true })).toThrow(/unknown action/);

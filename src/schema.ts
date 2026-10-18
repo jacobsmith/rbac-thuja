@@ -7,6 +7,8 @@ export type AttributeValue<T extends AttributeType> = T extends 'boolean' ? bool
 export type Attributes = { readonly [attribute: string]: AttributeType };
 
 export interface PolicySchema {
+    /** Optional: declaring roles types them and rejects unknown ones; omit for runtime-defined roles. */
+    readonly roles?: readonly string[];
     readonly actions: readonly string[];
     readonly resources: { readonly [resource: string]: Attributes };
     readonly context: Attributes;
@@ -26,6 +28,9 @@ export function defineSchema<const S extends PolicySchema>(schema: S): S {
 }
 
 export function validateSchema(schema: PolicySchema) {
+    if (schema.roles && new Set(schema.roles).size !== schema.roles.length) {
+        throw new Error("Schema declares duplicate roles.");
+    }
     for (const [resource, attributes] of Object.entries(schema.resources)) {
         for (const reserved of RESERVED_RESOURCE_ATTRIBUTES) {
             if (reserved in attributes) {
@@ -35,6 +40,7 @@ export function validateSchema(schema: PolicySchema) {
     }
 }
 
+export type RoleName<S extends PolicySchema> = S extends { readonly roles: readonly (infer R extends string)[] } ? R : string;
 export type Action<S extends PolicySchema> = S['actions'][number];
 export type ResourceName<S extends PolicySchema> = keyof S['resources'] & string;
 
