@@ -30,6 +30,14 @@ sense.
    written, rather than requiring the developer to declare "check ownership"
    separately.
 
+   **Revised after the 50-role stress test:** treating *every* condition in a
+   group as an invariant meant one unusual role got every rule-following role
+   flagged for skipping its condition. That was 356 of 518 findings (69%).
+   `inferInvariants` now uses the condition the **most roles** use (each role
+   counts once). Ties keep all tied conditions, so both sides get flagged, and
+   a group where `true` wins has no invariant. With this rule the stress
+   policy produces 77 findings, exactly its 77 deviating grants.
+
    Needs a new method — something like `getDistinctConditions()` — on
    `Encodable`, since it already owns `roles`.
 

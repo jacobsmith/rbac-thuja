@@ -120,12 +120,22 @@ function bruteForceFindings(permissionsByRole: Map<string, Array<AnyPermission>>
             assignments(schema.context).map((contextValue) => ({ resourceValue, contextValue })));
 
         for (const action of schema.actions) {
-            const invariants = new Map<string, AnyCondition>();
-            for (const permission of all) {
-                if (permission.action === action && permission.resource === resource && permission.condition !== true) {
-                    invariants.set(conditionKey(permission.condition), permission.condition);
+            // the rule is whichever condition the most roles use (ties keep all; `true` is never a rule)
+            const rolesByCondition = new Map<string, { condition: AnyCondition, roles: Set<string> }>();
+            for (const [role, permissions] of permissionsByRole) {
+                for (const permission of permissions) {
+                    if (permission.action === action && permission.resource === resource) {
+                        const key = conditionKey(permission.condition);
+                        const entry = rolesByCondition.get(key) ?? { condition: permission.condition, roles: new Set<string>() };
+                        entry.roles.add(role);
+                        rolesByCondition.set(key, entry);
+                    }
                 }
             }
+            const top = Math.max(0, ...[...rolesByCondition.values()].map((entry) => entry.roles.size));
+            const invariants = new Map([...rolesByCondition]
+                .filter(([, entry]) => entry.roles.size === top && entry.condition !== true)
+                .map(([key, entry]) => [key, entry.condition]));
 
             for (const [role, permissions] of permissionsByRole) {
                 const relevant = permissions.filter((p) => p.action === action && p.resource === resource);

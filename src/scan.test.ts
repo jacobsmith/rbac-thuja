@@ -25,7 +25,35 @@ describe('findBypasses', () => {
         expect(findings[0]?.fingerprint).toMatch(/^sha256:[0-9a-f]{64}$/);
     });
 
-    it('flags a role whose condition contradicts the inferred invariant, not just `true`', async () => {
+    it('flags only the unusual role, not the roles following the common rule', async () => {
+        const policy = new Policy(cmsSchema);
+        const unpublishedOnly = { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' } as const;
+        policy.addRole('writer', [{ action: 'edit', resource: 'article', condition: unpublishedOnly }]);
+        policy.addRole('editor', [{ action: 'edit', resource: 'article', condition: unpublishedOnly }]);
+        policy.addRole('publisher', [
+            { action: 'edit', resource: 'article', condition: { property: 'authorId', operator: 'eq', contextProperty: 'id', type: 'ContextExpression' } },
+        ]);
+
+        const ids = (await policy.findBypasses()).map((finding) => finding.id);
+
+        // publisher's ownership check is the odd one out: it's flagged for skipping the
+        // common rule, and writer/editor are not flagged for skipping publisher's rule
+        expect(ids).toEqual(['publisher|edit|article|published==false']);
+    });
+
+    it('has no rule for an action most roles may do unconditionally', async () => {
+        const policy = new Policy(cmsSchema);
+        policy.addRole('writer', [{ action: 'create', resource: 'article', condition: true }]);
+        policy.addRole('editor', [{ action: 'create', resource: 'article', condition: true }]);
+        policy.addRole('publisher', [
+            { action: 'create', resource: 'article', condition: { property: 'published', operator: 'eq', value: false, type: 'LiteralExpression' } },
+        ]);
+
+        expect(inferInvariants(policy).size).toEqual(0);
+        expect(await policy.findBypasses()).toEqual([]);
+    });
+
+    it('flags both sides of a tie, since neither is clearly the unusual one', async () => {
         const policy = new Policy(cmsSchema);
         policy.addRole('writer', [
             { action: 'edit', resource: 'article', condition: { property: 'published', operator: 'eq', value: true, type: 'LiteralExpression' } },

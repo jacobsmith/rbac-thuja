@@ -25,24 +25,44 @@ function loadZ3() {
 }
 
 /**
- * Invariants are inferred from the policy itself: every condition any role attaches to
- * an action/resource is treated as something that action/resource is meant to require.
+ * Invariants are inferred from the policy itself: for each action/resource, the condition
+ * the most roles use is treated as the rule, so only roles that deviate from it are
+ * flagged. Each role counts once per distinct condition. When conditions tie, all of them
+ * are kept (we can't tell which side is unusual, so both get flagged). When unconditional
+ * access (`true`) is the most common, that action/resource has no invariant.
  */
 export function inferInvariants(policy: EncodablePolicy): Map<string, { action: string, resource: string, conditions: Map<string, AnyCondition> }> {
-    const groups = new Map<string, { action: string, resource: string, conditions: Map<string, AnyCondition> }>();
+    const tallies = new Map<string, { action: string, resource: string, votes: Map<string, { condition: AnyCondition, roles: Set<string> }> }>();
 
     for (const role of policy.getRoles()) {
         for (const permission of policy.getPermissions(role)) {
-            if (permission.condition === true) {
-                continue;
-            }
             const groupKey = `${permission.action}|${permission.resource}`;
-            let group = groups.get(groupKey);
-            if (!group) {
-                group = { action: permission.action, resource: permission.resource, conditions: new Map() };
-                groups.set(groupKey, group);
+            let tally = tallies.get(groupKey);
+            if (!tally) {
+                tally = { action: permission.action, resource: permission.resource, votes: new Map() };
+                tallies.set(groupKey, tally);
             }
-            group.conditions.set(conditionKey(permission.condition), permission.condition);
+            const key = conditionKey(permission.condition);
+            let vote = tally.votes.get(key);
+            if (!vote) {
+                vote = { condition: permission.condition, roles: new Set() };
+                tally.votes.set(key, vote);
+            }
+            vote.roles.add(role);
+        }
+    }
+
+    const groups = new Map<string, { action: string, resource: string, conditions: Map<string, AnyCondition> }>();
+    for (const [groupKey, { action, resource, votes }] of tallies) {
+        const mostVotes = Math.max(...[...votes.values()].map((vote) => vote.roles.size));
+        const conditions = new Map<string, AnyCondition>();
+        for (const [key, vote] of votes) {
+            if (vote.roles.size === mostVotes && vote.condition !== true) {
+                conditions.set(key, vote.condition);
+            }
+        }
+        if (conditions.size > 0) {
+            groups.set(groupKey, { action, resource, conditions });
         }
     }
 
