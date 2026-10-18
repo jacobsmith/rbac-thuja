@@ -162,8 +162,14 @@ real approval gate. The file records the decision; code review enforces it.
       fingerprints and finding IDs, with deterministic key order.
 - [x] **Deterministic output.** Sort findings; no `console.log` in library
       code.
-- [ ] **Declared invariants** (optional `invariants` option) on top of the
-      inferred ones, to catch rules no role encodes yet.
+- [x] **Declared invariants** in the schema (`invariants`: `requires`,
+      `onlyRoles`, or both). Where `requires` is declared, it replaces
+      inference, and inference only flags the invariant as loose if most
+      roles require more. Where nothing is declared, inferred findings still
+      fail (NO INVARIANT). All findings are approvable via the exceptions
+      file, except vacuous invariants. On the compound stress policy, a
+      stricter declared rule catches 18 of 22 rule-following roles that
+      inference never flags.
 
 ## Compound conditions (AND / OR / NOT) — done
 

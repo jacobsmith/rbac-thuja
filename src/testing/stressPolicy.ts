@@ -2,7 +2,7 @@
 
 import { conditionKey, evaluateCondition, normalizeCondition } from '../conditions.js';
 import { Policy } from '../policy.js';
-import { defineSchema, type AnyCondition, type AnyPermission, type Attributes, type PolicySchema } from '../schema.js';
+import { defineSchema, type AnyCondition, type AnyInvariant, type AnyPermission, type Attributes, type PolicySchema } from '../schema.js';
 
 // 50 roles: 10 departments x 5 levels.
 const DEPARTMENTS = ['editorial', 'finance', 'legal', 'sales', 'support', 'engineering', 'marketing', 'hr', 'compliance', 'ops'];
@@ -234,7 +234,56 @@ export function bruteForceFindings(permissionsByRole: PermissionsByRole, policyS
                     return { name, table };
                 });
 
+            const holds = (table: string) => (i: number) => table[i] === '1';
+            const someWorld = (predicate: (i: number) => boolean) => {
+                const worlds = rules[0]?.table.length ?? [...roleRules.values()][0]?.table.length ?? 0;
+                for (let i = 0; i < worlds; i++) {
+                    if (predicate(i)) { return true; }
+                }
+                return false;
+            };
+
+            // declared invariants for this pair
+            const declared = (policySchema.invariants ?? []).filter((invariant) => invariant.resource === resource
+                && (typeof invariant.action === 'string' ? invariant.action === action : invariant.action.includes(action)));
+
+            const notAllowed = new Set<string>();
+            for (const invariant of declared) {
+                if (!invariant.onlyRoles) { continue; }
+                for (const [role, rule] of roleRules) {
+                    if (!invariant.onlyRoles.includes(role) && rule.table.includes('1')) {
+                        notAllowed.add(role);
+                        findings.add(`${role}|${action}|${resource}|invariant:${invariant.name}`);
+                    }
+                }
+            }
+
+            const conditionInvariants = declared.filter((invariant) => invariant.requires !== undefined);
+            if (conditionInvariants.length > 0) {
+                const requiredTables = conditionInvariants.map((invariant) => truthTable(invariant.requires!, resource));
+                conditionInvariants.forEach((invariant, n) => {
+                    const required = holds(requiredTables[n]!);
+                    for (const [role, rule] of roleRules) {
+                        if (invariant.onlyRoles && !invariant.onlyRoles.includes(role)) { continue; }
+                        const grants = holds(rule.table);
+                        if (someWorld((i) => grants(i) && !required(i))) {
+                            findings.add(`${role}|${action}|${resource}|invariant:${invariant.name}`);
+                        }
+                    }
+                });
+                // loose: the declared conditions together allow something the inferred rule doesn't
+                const names = conditionInvariants.map((invariant) => invariant.name).sort().join('+');
+                for (const { name, table } of rules) {
+                    const rule = holds(table);
+                    if (someWorld((i) => requiredTables.every((t) => t[i] === '1') && !rule(i))) {
+                        findings.add(`invariant:${names}|${action}|${resource}|inferred:${name}`);
+                    }
+                }
+                continue;
+            }
+
             for (const [role, rule] of roleRules) {
+                if (notAllowed.has(role)) { continue; }
                 for (const { name, table } of rules) {
                     // a bypass: some assignment where the role grants but the rule doesn't hold
                     if ([...rule.table].some((bit, i) => bit === '1' && table[i] === '0')) {
@@ -261,6 +310,7 @@ export function enumerator(permissionsByRole: PermissionsByRole, policySchema: P
         }
     };
     all.forEach((permission) => collect(permission.condition));
+    (policySchema.invariants ?? []).forEach((invariant) => invariant.requires !== undefined && collect(invariant.requires));
     const stringDomain = ['v1', 'v2', ...literals];
 
     const assignments = (attributes: Attributes): Array<Record<string, boolean | string>> =>
@@ -287,4 +337,49 @@ export function enumerator(permissionsByRole: PermissionsByRole, policySchema: P
         truthTable: (condition: AnyCondition, resource: string) => worldsFor(resource)
             .map(({ resourceValue, contextValue }) => evaluateCondition(condition, resourceValue, contextValue) ? '1' : '0').join(''),
     };
+}
+
+export type InvariantStyle = 'exact' | 'looser' | 'stricter' | 'allowlist';
+
+/**
+ * Declared invariants for a compound policy: some pairs declare the house rule exactly,
+ * some a looser or stricter version of it, and some an allowlist of a few roles.
+ * Stricter invariants model the majority being wrong: most roles follow the house rule,
+ * but the declared rule demands more.
+ */
+export function generateInvariants(
+    permissionsByRole: PermissionsByRole,
+    houseRules: Map<string, AnyCondition>,
+    seed = 20261020,
+): { invariants: Array<AnyInvariant>, styles: Map<string, InvariantStyle> } {
+    const random = prng(seed);
+    const invariants: Array<AnyInvariant> = [];
+    const styles = new Map<string, InvariantStyle>();
+
+    for (const [pairKey, rule] of houseRules) {
+        const [action, resource] = pairKey.split('|') as [string, string];
+        const roll = random();
+        const extra = GUARDS[resource]![Math.floor(random() * GUARDS[resource]!.length)]!;
+        const name = `${resource}-${action}`;
+        let style: InvariantStyle | undefined;
+
+        if (roll < 0.25) {
+            style = 'exact';
+            invariants.push({ name, action, resource, requires: rule });
+        } else if (roll < 0.40) {
+            style = 'looser';
+            invariants.push({ name, action, resource, requires: or(rule, extra) });
+        } else if (roll < 0.55) {
+            style = 'stricter';
+            invariants.push({ name, action, resource, requires: and(rule, extra) });
+        } else if (roll < 0.65) {
+            style = 'allowlist';
+            const holders = [...permissionsByRole].filter(([, permissions]) => permissions.some((p) => p.action === action && p.resource === resource)).map(([role]) => role);
+            invariants.push({ name, action, resource, onlyRoles: holders.slice(0, Math.ceil(holders.length / 2)) });
+        }
+        if (style) {
+            styles.set(pairKey, style);
+        }
+    }
+    return { invariants, styles };
 }

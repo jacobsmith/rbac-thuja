@@ -11,6 +11,8 @@ import {
     enumerator,
     generateAtomicPermissions,
     generateCompoundPermissions,
+    generateInvariants,
+    schema,
 } from './testing/stressPolicy.js';
 import type { ExceptionsFile } from './verify.js';
 
@@ -117,5 +119,60 @@ describe('stress: 50 roles, compound And/Or/Not conditions', () => {
                 expect(flagged.has(grant), `${grant} (unconditional) should be flagged`).toBe(true);
             }
         }
+    }, 300_000);
+});
+
+describe('stress: 50 roles, compound conditions, declared invariants and allowlists', () => {
+    const { permissionsByRole, variants, houseRules } = generateCompoundPermissions();
+    const { invariants, styles } = generateInvariants(permissionsByRole, houseRules);
+    const governedSchema = { ...schema, invariants };
+
+    it('declares a mix of invariant styles', () => {
+        const counts = new Map<string, number>();
+        styles.forEach((style) => counts.set(style, (counts.get(style) ?? 0) + 1));
+        for (const style of ['exact', 'looser', 'stricter', 'allowlist']) {
+            expect(counts.get(style) ?? 0, style).toBeGreaterThan(0);
+        }
+    });
+
+    it('finds exactly what a brute-force search finds', async () => {
+        const started = performance.now();
+        const { findings, stats, vacuousInvariants } = await scanPolicy(buildPolicy(permissionsByRole, governedSchema));
+        const elapsed = performance.now() - started;
+
+        const expected = bruteForceFindings(permissionsByRole, governedSchema);
+        const kinds = new Map<string, number>();
+        findings.forEach((finding) => kinds.set(finding.kind, (kinds.get(finding.kind) ?? 0) + 1));
+        console.log(`[stress:invariants] ${invariants.length} invariants -> ${findings.length} findings in ${elapsed.toFixed(0)}ms`, Object.fromEntries(kinds), stats);
+
+        expect(findings.map((finding) => finding.id)).toEqual([...expected].sort());
+        // the generator sometimes builds an invariant from a house rule that always holds
+        const { truthTable } = enumerator(permissionsByRole, governedSchema);
+        const alwaysHolds = invariants
+            .filter((invariant) => invariant.requires !== undefined && invariant.onlyRoles === undefined && !truthTable(invariant.requires, invariant.resource).includes('0'))
+            .map((invariant) => invariant.name).sort();
+        expect(vacuousInvariants).toEqual(alwaysHolds);
+        for (const kind of ['invariant', 'not-allowed', 'inferred', 'loose-invariant']) {
+            expect(kinds.get(kind) ?? 0, kind).toBeGreaterThan(0);
+        }
+    }, 300_000);
+
+    it('catches roles that follow the majority when the declared rule is stricter', async () => {
+        const { findings } = await scanPolicy(buildPolicy(permissionsByRole, governedSchema));
+        const flagged = new Set(findings.filter((finding) => finding.kind === 'invariant').map((finding) => `${finding.role}|${finding.action}|${finding.resource}`));
+
+        // inference alone never flags a role that writes the house rule exactly
+        const caught = [...variants].filter(([grant, variant]) => {
+            const [, action, resource] = grant.split('|');
+            return variant === 'exact' && styles.get(`${action}|${resource}`) === 'stricter' && flagged.has(grant);
+        });
+        expect(caught.length).toBeGreaterThan(0);
+    }, 300_000);
+
+    it('never calls an exactly declared house rule loose', async () => {
+        const { findings } = await scanPolicy(buildPolicy(permissionsByRole, governedSchema));
+        const loose = findings.filter((finding) => finding.kind === 'loose-invariant' && styles.get(`${finding.action}|${finding.resource}`) === 'exact');
+
+        expect(loose).toEqual([]);
     }, 300_000);
 });
