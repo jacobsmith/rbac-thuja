@@ -31,3 +31,32 @@ export function createCmsPolicy() {
     ]);
     return policy;
 }
+
+// The same CMS with its rules declared up front: Thuja enforces these instead of
+// inferring rules from what most roles do.
+export const governedCmsSchema = defineSchema({
+    ...cmsSchema,
+    invariants: [
+        {
+            name: 'edit-unpublished-only',
+            action: 'edit',
+            resource: 'article',
+            requires: { type: 'LiteralExpression', property: 'published', operator: 'eq', value: false },
+        },
+        {
+            name: 'only-publishers-publish',
+            action: ['publish', 'unpublish'],
+            resource: 'article',
+            onlyRoles: ['publisher'],
+        },
+    ],
+});
+
+export function createGovernedCmsPolicy() {
+    const policy = new Policy(governedCmsSchema);
+    const plain = createCmsPolicy();
+    for (const role of plain.getRoles()) {
+        policy.addRole(role, plain.getPermissions(role) as never);
+    }
+    return policy;
+}

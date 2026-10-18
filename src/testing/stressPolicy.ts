@@ -238,7 +238,7 @@ export function bruteForceFindings(permissionsByRole: PermissionsByRole, policyS
                 for (const { name, table } of rules) {
                     // a bypass: some assignment where the role grants but the rule doesn't hold
                     if ([...rule.table].some((bit, i) => bit === '1' && table[i] === '0')) {
-                        findings.add(`${role}|${action}|${resource}|${name}`);
+                        findings.add(`${role}|${action}|${resource}|inferred:${name}`);
                     }
                 }
             }

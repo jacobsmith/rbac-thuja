@@ -9,7 +9,7 @@ import { defineSchema } from './schema.js';
 import { permissionsFingerprint } from './scan.js';
 import type { ExceptionEntry, ExceptionsFile } from './verify.js';
 
-const BYPASS = 'compliance_officer|edit|article|published==false';
+const BYPASS = 'compliance_officer|edit|article|inferred:published==false';
 
 let exceptionsFile: string;
 
@@ -108,15 +108,15 @@ describe('verifyNoUnapprovedBypasses', () => {
     });
 
     it('fails on an exception that no longer matches a bypass', async () => {
-        writeExceptions({ [BYPASS]: approved(), 'writer|edit|article|published==false': approved() });
+        writeExceptions({ [BYPASS]: approved(), 'writer|edit|article|inferred:published==false': approved() });
 
         expect(await problemsOf(createCmsPolicy().verifyNoUnapprovedBypasses({ exceptionsFile, update: false })))
-            .toEqual([['stale', 'writer|edit|article|published==false']]);
+            .toEqual([['stale', 'writer|edit|article|inferred:published==false']]);
     });
 
     it('explains how to fix things in the error message', async () => {
         await expect(createCmsPolicy().verifyNoUnapprovedBypasses({ exceptionsFile, update: false }))
-            .rejects.toThrow(/NEW BYPASS  compliance_officer\|edit\|article\|published==false[\s\S]*THUJA_UPDATE=1/);
+            .rejects.toThrow(/NO INVARIANT  compliance_officer\|edit\|article\|inferred:published==false[\s\S]*THUJA_UPDATE=1/);
     });
 
     it('rejects an exceptions file from a different format version', async () => {
@@ -124,6 +124,64 @@ describe('verifyNoUnapprovedBypasses', () => {
 
         await expect(createCmsPolicy().verifyNoUnapprovedBypasses({ exceptionsFile, update: false }))
             .rejects.toThrow(/version 2/);
+    });
+
+    describe('declared invariants', () => {
+        const unpublished = { type: 'LiteralExpression', property: 'published', operator: 'eq', value: false } as const;
+        const owner = { type: 'ContextExpression', property: 'authorId', operator: 'eq', contextProperty: 'id' } as const;
+
+        function governed(invariants: Array<unknown>) {
+            const policy = new Policy(defineSchema({ ...cmsSchema, roles: ['writer', 'editor', 'publisher'], invariants: invariants as never }));
+            policy.addRole('writer', [{ action: 'edit', resource: 'article', condition: { type: 'And', conditions: [unpublished, owner] } }]);
+            policy.addRole('editor', [{ action: 'edit', resource: 'article', condition: { type: 'And', conditions: [unpublished, owner] } }]);
+            policy.addRole('publisher', [{ action: 'edit', resource: 'article', condition: true }, { action: 'publish', resource: 'article', condition: true }]);
+            return policy;
+        }
+
+        it('labels each kind of finding and says how to resolve it', async () => {
+            const policy = governed([
+                { name: 'unpublished-only', action: 'edit', resource: 'article', requires: unpublished },
+                { name: 'only-editors-publish', action: 'publish', resource: 'article', onlyRoles: ['editor'] },
+            ]);
+
+            const error = await policy.verifyNoUnapprovedBypasses({ exceptionsFile, update: false }).then(() => undefined, (e: unknown) => e) as ThujaVerificationError;
+
+            expect(error.problems.map((problem) => [problem.findingKind, problem.id])).toEqual([
+                ['loose-invariant', 'invariant:unpublished-only|edit|article|inferred:(authorId==context.id && published==false)'],
+                ['invariant', 'publisher|edit|article|invariant:unpublished-only'],
+                ['not-allowed', 'publisher|publish|article|invariant:only-editors-publish'],
+            ]);
+            expect(error.message).toMatch(/LOOSE INVARIANT  invariant:unpublished-only[\s\S]*Tighten the invariant or approve this/);
+            expect(error.message).toMatch(/NEW BYPASS  publisher\|edit\|article\|invariant:unpublished-only[\s\S]*Fix the role's permissions or approve this/);
+            expect(error.message).toMatch(/NOT ALLOWED  publisher\|publish\|article\|invariant:only-editors-publish[\s\S]*add the role to onlyRoles/);
+        });
+
+        it('approves invariant findings through the exceptions file like any other', async () => {
+            const policy = governed([{ name: 'own-drafts', action: 'edit', resource: 'article', requires: { type: 'And', conditions: [unpublished, owner] } }]);
+            await policy.verifyNoUnapprovedBypasses({ exceptionsFile, update: true }).catch(() => undefined);
+            const file = readExceptions();
+            for (const entry of Object.values(file.exceptions)) {
+                Object.assign(entry, { reason: 'Publishers fix typos in live articles', approvedBy: 'jacob', approvedAt: '2026-10-18' });
+            }
+            writeFileSync(exceptionsFile, JSON.stringify(file));
+
+            const report = await policy.verifyNoUnapprovedBypasses({ exceptionsFile, update: false });
+
+            expect(report.findings.map((finding) => finding.id)).toEqual(['publisher|edit|article|invariant:own-drafts']);
+        });
+
+        it('fails on an invariant that can never catch anything, with no exceptions-file hint', async () => {
+            const policy = governed([
+                { name: 'own-drafts', action: 'edit', resource: 'article', requires: { type: 'And', conditions: [unpublished, owner] } },
+                { name: 'tautology', action: 'publish', resource: 'article', requires: { type: 'Or', conditions: [unpublished, { type: 'Not', condition: unpublished }] } },
+            ]);
+            writeExceptions({ 'publisher|edit|article|invariant:own-drafts': { ...approved(), fingerprint: (await policy.findBypasses())[0]!.fingerprint } });
+
+            const error = await policy.verifyNoUnapprovedBypasses({ exceptionsFile, update: false }).then(() => undefined, (e: unknown) => e) as ThujaVerificationError;
+
+            expect(error.problems.map((problem) => [problem.kind, problem.id])).toEqual([['vacuous-invariant', 'invariant:tautology']]);
+            expect(error.message).not.toMatch(/THUJA_UPDATE/);
+        });
     });
 
     describe('update mode', () => {
@@ -145,7 +203,7 @@ describe('verifyNoUnapprovedBypasses', () => {
         });
 
         it('drops stale exceptions and leaves approved ones untouched', async () => {
-            writeExceptions({ [BYPASS]: approved({ expires: '2099-01-01' }), 'writer|edit|article|published==false': approved() });
+            writeExceptions({ [BYPASS]: approved({ expires: '2099-01-01' }), 'writer|edit|article|inferred:published==false': approved() });
 
             await createCmsPolicy().verifyNoUnapprovedBypasses({ exceptionsFile, update: true });
 

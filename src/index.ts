@@ -6,6 +6,7 @@ export type {
     Action,
     AttributeType,
     Condition,
+    Invariant,
     ContextExpression,
     ContextValue,
     LiteralExpression,
@@ -16,5 +17,5 @@ export type {
     RoleName,
 } from "./schema.js";
 export { ImmutableRolesError, ThujaVerificationError, type VerificationProblem, type VerificationProblemKind } from "./errors.js";
-export type { Finding } from "./scan.js";
+export type { Finding, FindingKind } from "./scan.js";
 export type { ExceptionEntry, ExceptionsFile, VerificationReport, VerifyOptions } from "./verify.js";

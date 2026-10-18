@@ -4,15 +4,36 @@ import { conditionKey, evaluateCondition, normalizeCondition } from "./condition
 import { PolicyEncoder, type EncodablePolicy } from "./PolicyEncoder.js";
 import type { AnyCondition, Attributes } from "./schema.js";
 
+export type FindingKind =
+    /** A role can act without satisfying a declared invariant's `requires`. */
+    | 'invariant'
+    /** A role outside an invariant's `onlyRoles` can act. */
+    | 'not-allowed'
+    /** No invariant declares conditions here, and a role deviates from the inferred rule. */
+    | 'inferred'
+    /** A declared invariant allows something the inferred rule (what most roles require) doesn't. */
+    | 'loose-invariant';
+
 export type Finding = {
-    /** Stable key for the exceptions file: `role|action|resource|invariant`. */
+    /**
+     * Stable key for the exceptions file:
+     * `role|action|resource|invariant:<name>` for 'invariant' and 'not-allowed',
+     * `role|action|resource|inferred:<rule>` for 'inferred',
+     * `invariant:<names>|action|resource|inferred:<rule>` for 'loose-invariant'.
+     */
     id: string,
-    role: string,
+    kind: FindingKind,
+    /** The role at fault; absent for 'loose-invariant', which is about the invariant itself. */
+    role?: string,
     action: string,
     resource: string,
-    /** The condition (as `conditionKey`) this role grants the action without. */
-    invariant: string,
-    /** Hash of this role's permissions for this action/resource; changes when they do. */
+    /** Declared invariant name(s), joined with "+" when several cover the pair. */
+    invariant?: string,
+    /** The inferred rule, as `conditionKey`. */
+    inferredRule?: string,
+    /** One sentence for humans. */
+    description: string,
+    /** Hash of everything the finding depends on; when it changes, approvals go stale. */
     fingerprint: string,
 };
 
@@ -31,7 +52,7 @@ export type RoleRule = {
     condition: AnyCondition,
 };
 
-export type InvariantGroup = {
+export type InferredRuleGroup = {
     action: string,
     resource: string,
     /** Every role with at least one permission for this action/resource. */
@@ -57,8 +78,8 @@ export type Equivalence = (a: AnyCondition, b: AnyCondition, resource: string) =
  * `published==false`. A cheap truth-table signature over sample values rules out most
  * non-equivalent pairs before `equivalent` is asked.
  */
-export async function inferInvariants(policy: EncodablePolicy, equivalent?: Equivalence): Promise<Map<string, InvariantGroup>> {
-    const groups = new Map<string, InvariantGroup>();
+export async function inferRules(policy: EncodablePolicy, equivalent?: Equivalence): Promise<Map<string, InferredRuleGroup>> {
+    const groups = new Map<string, InferredRuleGroup>();
     const sampler = new WorldSampler(policy);
 
     for (const [groupKey, { action, resource, roleRules }] of collectRoleRules(policy)) {
@@ -126,7 +147,7 @@ export async function inferInvariants(policy: EncodablePolicy, equivalent?: Equi
     return groups;
 }
 
-function collectRoleRules(policy: EncodablePolicy) {
+export function collectRoleRules(policy: EncodablePolicy) {
     const groups = new Map<string, { action: string, resource: string, roleRules: Map<string, RoleRule> }>();
     const conditionsByGroupRole = new Map<string, Map<string, Array<AnyCondition>>>();
 
@@ -208,18 +229,52 @@ class WorldSampler {
     }
 }
 
-export function permissionsFingerprint(policy: EncodablePolicy, role: string, action: string, resource: string): string {
+export function permissionsFingerprint(policy: EncodablePolicy, role: string, action: string, resource: string, ...extra: Array<string>): string {
     const conditions = policy.getPermissions(role)
         .filter((permission) => permission.action === action && permission.resource === resource)
         .map((permission) => conditionKey(permission.condition));
-    const canonical = JSON.stringify({ action, resource, conditions: [...new Set(conditions)].sort() });
+    return hash({ action, resource, conditions: [...new Set(conditions)].sort(), ...(extra.length > 0 ? { extra } : {}) });
+}
 
-    return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+function hash(value: unknown): string {
+    return `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
+}
+
+/** A declared invariant, expanded to one entry per action it covers. */
+type DeclaredInvariant = {
+    name: string,
+    requires?: AnyCondition,
+    onlyRoles?: ReadonlyArray<string>,
+    /** Canonical form of the definition, part of every fingerprint that depends on it. */
+    definition: string,
+};
+
+function declaredInvariantsByPair(policy: EncodablePolicy): Map<string, Array<DeclaredInvariant>> {
+    const byPair = new Map<string, Array<DeclaredInvariant>>();
+    for (const invariant of policy.schema.invariants ?? []) {
+        const declared: DeclaredInvariant = {
+            name: invariant.name,
+            ...(invariant.requires !== undefined ? { requires: invariant.requires } : {}),
+            ...(invariant.onlyRoles !== undefined ? { onlyRoles: invariant.onlyRoles } : {}),
+            definition: JSON.stringify({
+                requires: invariant.requires === undefined ? null : conditionKey(invariant.requires),
+                onlyRoles: invariant.onlyRoles === undefined ? null : [...invariant.onlyRoles].sort(),
+            }),
+        };
+        const actions = typeof invariant.action === 'string' ? [invariant.action] : invariant.action;
+        for (const action of actions) {
+            const pairKey = `${action}|${invariant.resource}`;
+            byPair.set(pairKey, [...(byPair.get(pairKey) ?? []), declared]);
+        }
+    }
+    return byPair;
 }
 
 export type ScanStats = {
-    /** Action/resource pairs that have an inferred rule. */
-    groups: number,
+    /** Action/resource pairs some role has a permission for. */
+    pairs: number,
+    /** Of those, pairs where a declared invariant's `requires` replaced inference. */
+    declaredPairs: number,
     /** Role-vs-rule questions answered by Z3. */
     solverChecks: number,
     /** Role-vs-rule questions skipped because the role uses (an equivalent of) the rule itself. */
@@ -228,17 +283,24 @@ export type ScanStats = {
     equivalenceChecks: number,
 };
 
+export type ScanResult = {
+    findings: Array<Finding>,
+    /** Invariants whose `requires` always holds and that have no `onlyRoles`: they can never catch anything. */
+    vacuousInvariants: Array<string>,
+    stats: ScanStats,
+};
+
 export async function findBypasses(policy: EncodablePolicy): Promise<Array<Finding>> {
     return (await scanPolicy(policy)).findings;
 }
 
-export async function scanPolicy(policy: EncodablePolicy): Promise<{ findings: Array<Finding>, stats: ScanStats }> {
+export async function scanPolicy(policy: EncodablePolicy): Promise<ScanResult> {
     const { Context } = await loadZ3();
     const z3Context = new Context('main');
     const encoder = new PolicyEncoder(policy, z3Context);
     const solver = new z3Context.Solver();
     const findings: Array<Finding> = [];
-    const stats: ScanStats = { groups: 0, solverChecks: 0, skippedChecks: 0, equivalenceChecks: 0 };
+    const stats: ScanStats = { pairs: 0, declaredPairs: 0, solverChecks: 0, skippedChecks: 0, equivalenceChecks: 0 };
 
     const isSat = async (...assertions: Array<Bool>) => {
         solver.push();
@@ -257,34 +319,127 @@ export async function scanPolicy(policy: EncodablePolicy): Promise<{ findings: A
         return !await isSat(encoder.encodeCondition(a, symbols).neq(encoder.encodeCondition(b, symbols)));
     };
 
-    const groups = await inferInvariants(policy, equivalent);
-    stats.groups = groups.size;
+    const declaredByPair = declaredInvariantsByPair(policy);
+    const inferred = await inferRules(policy, equivalent);
 
-    for (const { action, resource, roleRules, conditions, equivalentKeys } of groups.values()) {
+    for (const [pairKey, { action, resource, roleRules }] of collectRoleRules(policy)) {
+        stats.pairs++;
         const symbols = encoder.symbolsFor(resource);
-        const encodedRules = new Map([...conditions].map(([key, condition]) => [key, encoder.encodeCondition(condition, symbols)]));
+        const declared = declaredByPair.get(pairKey) ?? [];
+        const grants = new Map([...roleRules].map(([role, rule]) => [role, encoder.encodeCondition(rule.condition, symbols)]));
+        const notAllowed = new Set<string>();
+
+        // Allowlists: a role outside onlyRoles that can act at all is a finding.
+        for (const invariant of declared) {
+            if (!invariant.onlyRoles) {
+                continue;
+            }
+            for (const [role, grant] of grants) {
+                if (invariant.onlyRoles.includes(role)) {
+                    continue;
+                }
+                stats.solverChecks++;
+                if (await isSat(grant)) {
+                    notAllowed.add(role);
+                    findings.push({
+                        id: `${role}|${action}|${resource}|invariant:${invariant.name}`,
+                        kind: 'not-allowed',
+                        role, action, resource,
+                        invariant: invariant.name,
+                        description: `Role "${role}" can ${action} ${resource}, but invariant "${invariant.name}" only allows ${invariant.onlyRoles.join(', ') || 'no roles'}.`,
+                        fingerprint: permissionsFingerprint(policy, role, action, resource, invariant.definition),
+                    });
+                }
+            }
+        }
+
+        const conditionInvariants = declared.filter((invariant) => invariant.requires !== undefined);
+        const inferredGroup = inferred.get(pairKey);
+
+        if (conditionInvariants.length > 0) {
+            // Declared conditions replace inference for this pair...
+            stats.declaredPairs++;
+            for (const invariant of conditionInvariants) {
+                const requires = invariant.requires!;
+                const requiresKey = conditionKey(requires);
+                const encodedRequires = encoder.encodeCondition(requires, symbols);
+
+                for (const [role, rule] of roleRules) {
+                    if (invariant.onlyRoles && !invariant.onlyRoles.includes(role)) {
+                        continue; // already reported as not allowed at all
+                    }
+                    if (rule.key === requiresKey) {
+                        stats.skippedChecks++;
+                        continue;
+                    }
+                    stats.solverChecks++;
+                    if (await isSat(grants.get(role)!, z3Context.Not(encodedRequires))) {
+                        findings.push({
+                            id: `${role}|${action}|${resource}|invariant:${invariant.name}`,
+                            kind: 'invariant',
+                            role, action, resource,
+                            invariant: invariant.name,
+                            description: `Role "${role}" can ${action} ${resource} without satisfying invariant "${invariant.name}" (${requiresKey}).`,
+                            fingerprint: permissionsFingerprint(policy, role, action, resource, invariant.definition),
+                        });
+                    }
+                }
+            }
+
+            // ...and inference only checks whether the declared conditions are looser than
+            // what most roles actually require.
+            if (inferredGroup) {
+                const names = conditionInvariants.map((invariant) => invariant.name).sort();
+                const declaredConditions = conditionInvariants.map((invariant) => encoder.encodeCondition(invariant.requires!, symbols));
+                const allDeclared = declaredConditions.length === 1 ? declaredConditions[0]! : z3Context.And(...declaredConditions);
+                const definitions = conditionInvariants.map((invariant) => invariant.definition).sort();
+
+                for (const [ruleKey, rule] of inferredGroup.conditions) {
+                    stats.solverChecks++;
+                    if (await isSat(allDeclared, z3Context.Not(encoder.encodeCondition(rule, symbols)))) {
+                        const label = names.length === 1 ? `invariant "${names[0]}" doesn't` : `invariants ${names.map((n) => `"${n}"`).join(' + ')} don't`;
+                        findings.push({
+                            id: `invariant:${names.join('+')}|${action}|${resource}|inferred:${ruleKey}`,
+                            kind: 'loose-invariant',
+                            action, resource,
+                            invariant: names.join('+'),
+                            inferredRule: ruleKey,
+                            description: `Most roles that can ${action} ${resource} require ${ruleKey}, which ${label}.`,
+                            fingerprint: hash({ action, resource, definitions, ruleKey }),
+                        });
+                    }
+                }
+            }
+            continue;
+        }
+
+        // No declared conditions here: the inferred rule stands in, and deviations are findings.
+        if (!inferredGroup) {
+            continue;
+        }
+        const encodedRules = new Map([...inferredGroup.conditions].map(([key, condition]) => [key, encoder.encodeCondition(condition, symbols)]));
 
         // Permissions are a pure union (no deny), so a combination of roles can only
-        // bypass an invariant if one of its members can alone: checking roles one at a
-        // time is complete, and attributes each finding to exactly one role. Roles with
-        // no permission here aren't in roleRules: they can't grant anything.
+        // bypass a rule if one of its members can alone: checking roles one at a time is
+        // complete, and attributes each finding to exactly one role.
         for (const [role, rule] of roleRules) {
-            const grants = encoder.encodeCondition(rule.condition, symbols);
-
-            for (const [invariant, encodedRule] of encodedRules) {
+            if (notAllowed.has(role)) {
+                continue; // an allowlist already says this role shouldn't act here at all
+            }
+            for (const [ruleKey, encodedRule] of encodedRules) {
                 // the role uses the rule itself (or an equivalent): it can't act without it
-                if (equivalentKeys.get(invariant)?.has(rule.key)) {
+                if (inferredGroup.equivalentKeys.get(ruleKey)?.has(rule.key)) {
                     stats.skippedChecks++;
                     continue;
                 }
                 stats.solverChecks++;
-                if (await isSat(grants, z3Context.Not(encodedRule))) {
+                if (await isSat(grants.get(role)!, z3Context.Not(encodedRule))) {
                     findings.push({
-                        id: `${role}|${action}|${resource}|${invariant}`,
-                        role,
-                        action,
-                        resource,
-                        invariant,
+                        id: `${role}|${action}|${resource}|inferred:${ruleKey}`,
+                        kind: 'inferred',
+                        role, action, resource,
+                        inferredRule: ruleKey,
+                        description: `No invariant covers ${action} ${resource}. Most roles require ${ruleKey}; "${role}" can act without it.`,
                         fingerprint: permissionsFingerprint(policy, role, action, resource),
                     });
                 }
@@ -292,6 +447,18 @@ export async function scanPolicy(policy: EncodablePolicy): Promise<{ findings: A
         }
     }
 
+    // An invariant whose requirement always holds, with no allowlist, can never catch anything.
+    const vacuousInvariants: Array<string> = [];
+    for (const invariant of policy.schema.invariants ?? []) {
+        if (invariant.requires === undefined || invariant.onlyRoles !== undefined) {
+            continue;
+        }
+        const symbols = encoder.symbolsFor(invariant.resource);
+        if (!await isSat(z3Context.Not(encoder.encodeCondition(invariant.requires, symbols)))) {
+            vacuousInvariants.push(invariant.name);
+        }
+    }
+
     findings.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-    return { findings, stats };
+    return { findings, vacuousInvariants: vacuousInvariants.sort(), stats };
 }

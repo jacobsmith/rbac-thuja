@@ -1,4 +1,4 @@
-import type { AnyCondition, AnyPermission, Attributes, PolicySchema } from "./schema.js";
+import type { AnyCondition, AnyInvariant, AnyPermission, Attributes, PolicySchema } from "./schema.js";
 
 /** The canonical never-true condition (an empty `Or`); there is no `false` literal. */
 export const NEVER: AnyCondition = { type: 'Or', conditions: [] };
@@ -185,6 +185,36 @@ export function validatePermission(schema: PolicySchema, role: string, permissio
     }
 
     validateCondition(schema, attributes, permission.condition, where);
+}
+
+/** Runtime check of a schema invariant (the schema's own types cover TypeScript consumers). */
+export function validateInvariant(schema: PolicySchema, invariant: AnyInvariant) {
+    const where = `Invariant "${invariant.name}"`;
+    const actions = typeof invariant.action === 'string' ? [invariant.action] : invariant.action;
+
+    if (actions.length === 0) {
+        throw new Error(`${where}: needs at least one action.`);
+    }
+    for (const action of actions) {
+        if (!schema.actions.includes(action)) {
+            throw new Error(`${where}: unknown action "${action}".`);
+        }
+    }
+    const attributes = schema.resources[invariant.resource];
+    if (!attributes) {
+        throw new Error(`${where}: unknown resource "${invariant.resource}".`);
+    }
+    if (invariant.requires === undefined && invariant.onlyRoles === undefined) {
+        throw new Error(`${where}: needs "requires", "onlyRoles", or both.`);
+    }
+    if (invariant.requires !== undefined) {
+        validateCondition(schema, attributes, invariant.requires, where);
+    }
+    for (const role of invariant.onlyRoles ?? []) {
+        if (schema.roles && !schema.roles.includes(role)) {
+            throw new Error(`${where}: unknown role "${role}" in onlyRoles.`);
+        }
+    }
 }
 
 function validateCondition(schema: PolicySchema, attributes: Attributes, condition: AnyCondition, where: string) {

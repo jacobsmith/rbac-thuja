@@ -1,3 +1,5 @@
+import { validateInvariant } from "./conditions.js";
+
 // A consumer describes the shape of their authorization domain once; every other
 // type (permissions, conditions, runtime resource/context values) and the Z3
 // encoding are derived from it.
@@ -12,6 +14,12 @@ export interface PolicySchema {
     readonly actions: readonly string[];
     readonly resources: { readonly [resource: string]: Attributes };
     readonly context: Attributes;
+    /**
+     * Rules the policy must obey, checked by `verifyNoUnapprovedBypasses`. Where an invariant
+     * declares `requires` for an action/resource, it replaces the rule Thuja would otherwise
+     * infer from what most roles do.
+     */
+    readonly invariants?: ReadonlyArray<AnyInvariant>;
 }
 
 // `$type` on a runtime resource value identifies its resource type, so it can't
@@ -22,7 +30,7 @@ const RESERVED_RESOURCE_ATTRIBUTES = ['$type'];
  * Identity function that preserves literal types, so
  * `defineSchema({ actions: ['edit'], ... })` infers `'edit'` rather than `string`.
  */
-export function defineSchema<const S extends PolicySchema>(schema: S): S {
+export function defineSchema<const S extends PolicySchema>(schema: S & { readonly invariants?: ReadonlyArray<Invariant<S>> }): S {
     validateSchema(schema);
     return schema;
 }
@@ -37,6 +45,18 @@ export function validateSchema(schema: PolicySchema) {
                 throw new Error(`Resource "${resource}" declares reserved attribute "${reserved}".`);
             }
         }
+    }
+
+    const names = new Set<string>();
+    for (const invariant of schema.invariants ?? []) {
+        if (!invariant.name) {
+            throw new Error('Every invariant needs a name.');
+        }
+        if (names.has(invariant.name)) {
+            throw new Error(`Schema declares invariant "${invariant.name}" more than once.`);
+        }
+        names.add(invariant.name);
+        validateInvariant(schema, invariant);
     }
 }
 
@@ -95,3 +115,26 @@ export type AnyCondition =
     | { type: 'Or', conditions: ReadonlyArray<AnyCondition> }
     | { type: 'Not', condition: AnyCondition };
 export type AnyPermission = { action: string, resource: string, condition: AnyCondition };
+
+/**
+ * A declared rule for one resource and one or more actions. `requires` is a condition any
+ * role must satisfy to act; `onlyRoles` limits which roles may act at all. At least one is
+ * needed; with both, listed roles must also satisfy `requires`.
+ */
+export type Invariant<S extends PolicySchema> = {
+    [R in ResourceName<S>]: {
+        readonly name: string,
+        readonly action: Action<S> | ReadonlyArray<Action<S>>,
+        readonly resource: R,
+        readonly requires?: Condition<S['resources'][R], S['context']>,
+        readonly onlyRoles?: ReadonlyArray<RoleName<S>>,
+    }
+}[ResourceName<S>];
+
+export type AnyInvariant = {
+    readonly name: string,
+    readonly action: string | ReadonlyArray<string>,
+    readonly resource: string,
+    readonly requires?: AnyCondition,
+    readonly onlyRoles?: ReadonlyArray<string>,
+};

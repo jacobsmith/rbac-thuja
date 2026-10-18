@@ -165,6 +165,23 @@ describe('validation', () => {
             .toThrow(/reserved attribute "\$type"/);
     });
 
+    it('validates declared invariants at runtime', () => {
+        const withInvariant = (invariant: unknown) => () => defineSchema({ ...cmsSchema, invariants: [invariant] as never });
+
+        expect(withInvariant({ action: 'edit', resource: 'article', onlyRoles: ['writer'] })).toThrow(/needs a name/);
+        expect(withInvariant({ name: 'x', action: 'delete', resource: 'article', onlyRoles: ['writer'] })).toThrow(/unknown action "delete"/);
+        expect(withInvariant({ name: 'x', action: [], resource: 'article', onlyRoles: ['writer'] })).toThrow(/at least one action/);
+        expect(withInvariant({ name: 'x', action: 'edit', resource: 'page', onlyRoles: ['writer'] })).toThrow(/unknown resource "page"/);
+        expect(withInvariant({ name: 'x', action: 'edit', resource: 'article' })).toThrow(/needs "requires", "onlyRoles", or both/);
+        expect(withInvariant({ name: 'x', action: 'edit', resource: 'article', onlyRoles: ['admin'] })).toThrow(/unknown role "admin"/);
+        expect(withInvariant({ name: 'x', action: 'edit', resource: 'article', requires: { type: 'Not', condition: { type: 'LiteralExpression', property: 'nope', operator: 'eq', value: true } } }))
+            .toThrow(/unknown attribute "nope"/);
+        expect(() => defineSchema({ ...cmsSchema, invariants: [
+            { name: 'dup', action: 'edit', resource: 'article', onlyRoles: ['writer'] },
+            { name: 'dup', action: 'publish', resource: 'article', onlyRoles: ['writer'] },
+        ] })).toThrow(/invariant "dup" more than once/);
+    });
+
     it('rejects duplicate declared roles', () => {
         expect(() => defineSchema({ roles: ['writer', 'writer'], actions: [], resources: {}, context: {} }))
             .toThrow(/duplicate roles/);

@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { ThujaVerificationError, type VerificationProblem } from "./errors.js";
 import type { EncodablePolicy } from "./PolicyEncoder.js";
-import { findBypasses, type Finding } from "./scan.js";
+import { scanPolicy, type Finding, type FindingKind } from "./scan.js";
 
 export const EXCEPTIONS_FILE_VERSION = 1;
 
@@ -37,7 +37,7 @@ export async function verifyNoUnapprovedBypasses(policy: EncodablePolicy, option
     const update = options.update ?? ['1', 'true'].includes(process.env['THUJA_UPDATE'] ?? '');
     const now = options.now ?? new Date();
 
-    const findings = await findBypasses(policy);
+    const { findings, vacuousInvariants } = await scanPolicy(policy);
     let file = readExceptionsFile(path);
 
     if (update) {
@@ -45,7 +45,7 @@ export async function verifyNoUnapprovedBypasses(policy: EncodablePolicy, option
         writeFileSync(path, JSON.stringify(file, null, 2) + '\n');
     }
 
-    const problems = [...checkExceptions(findings, file, now), ...checkUnusedRoles(policy)];
+    const problems = [...checkExceptions(findings, file, now), ...checkUnusedRoles(policy), ...vacuousInvariantProblems(vacuousInvariants)];
     if (problems.length > 0) {
         throw new ThujaVerificationError(formatProblems(problems, options.exceptionsFile, update), problems);
     }
@@ -101,21 +101,22 @@ export function checkExceptions(findings: Array<Finding>, file: ExceptionsFile, 
     const findingIds = new Set(findings.map((finding) => finding.id));
 
     for (const finding of findings) {
-        const describe = `Role "${finding.role}" can ${finding.action} ${finding.resource} without ${finding.invariant}.`;
+        const describe = finding.description;
         const exception = file.exceptions[finding.id];
+        const about = { id: finding.id, findingKind: finding.kind };
 
         if (!exception) {
-            problems.push({ kind: 'unapproved', id: finding.id, message: `${describe} No exception approves this.` });
+            problems.push({ kind: 'unapproved', ...about, message: `${describe} ${NEXT_STEP[finding.kind]}` });
         } else if (exception.fingerprint !== finding.fingerprint) {
-            problems.push({ kind: 'changed', id: finding.id, message: `${describe} Its permissions changed since the exception was approved; re-review it.` });
+            problems.push({ kind: 'changed', ...about, message: `${describe} What this depends on (the role's permissions or the invariant) changed since the exception was approved; re-review it.` });
         } else if (!exception.reason?.trim() || !exception.approvedBy?.trim() || !exception.approvedAt?.trim()) {
-            problems.push({ kind: 'incomplete', id: finding.id, message: `${describe} The exception needs a reason, approvedBy and approvedAt.` });
+            problems.push({ kind: 'incomplete', ...about, message: `${describe} The exception needs a reason, approvedBy and approvedAt.` });
         } else if (exception.expires !== undefined) {
             const expires = new Date(exception.expires);
             if (Number.isNaN(expires.getTime())) {
-                problems.push({ kind: 'incomplete', id: finding.id, message: `${describe} The exception's expires (${JSON.stringify(exception.expires)}) is not a valid date.` });
+                problems.push({ kind: 'incomplete', ...about, message: `${describe} The exception's expires (${JSON.stringify(exception.expires)}) is not a valid date.` });
             } else if (now >= expires) {
-                problems.push({ kind: 'expired', id: finding.id, message: `${describe} The exception expired on ${exception.expires}.` });
+                problems.push({ kind: 'expired', ...about, message: `${describe} The exception expired on ${exception.expires}.` });
             }
         }
     }
@@ -141,6 +142,32 @@ export function checkUnusedRoles(policy: EncodablePolicy): Array<VerificationPro
         }));
 }
 
+const NEXT_STEP: Record<FindingKind, string> = {
+    'invariant': 'Fix the role\'s permissions or approve this.',
+    'not-allowed': 'Remove the permission, add the role to onlyRoles, or approve this.',
+    'inferred': 'Declare an invariant or approve this.',
+    'loose-invariant': 'Tighten the invariant or approve this.',
+};
+
+const UNAPPROVED_LABELS: Record<FindingKind, string> = {
+    'invariant': 'NEW BYPASS',
+    'not-allowed': 'NOT ALLOWED',
+    'inferred': 'NO INVARIANT',
+    'loose-invariant': 'LOOSE INVARIANT',
+};
+
+/** Invariants that can never catch anything: almost certainly a mistake in the invariant. */
+export function vacuousInvariantProblems(names: Array<string>): Array<VerificationProblem> {
+    return names.map((name) => ({
+        kind: 'vacuous-invariant' as const,
+        id: `invariant:${name}`,
+        message: 'Its "requires" always holds, so it can never catch anything; fix the condition or remove the invariant.',
+    }));
+}
+
+// Problems that an exceptions-file update can't resolve.
+const NOT_EXCEPTIONS = new Set<VerificationProblem['kind']>(['unused-role', 'vacuous-invariant']);
+
 const LABELS: Record<VerificationProblem['kind'], string> = {
     unapproved: 'NEW BYPASS',
     changed: 'CHANGED',
@@ -148,11 +175,14 @@ const LABELS: Record<VerificationProblem['kind'], string> = {
     expired: 'EXPIRED',
     stale: 'STALE',
     'unused-role': 'UNUSED ROLE',
+    'vacuous-invariant': 'VACUOUS INVARIANT',
 };
 
 function formatProblems(problems: Array<VerificationProblem>, exceptionsFile: string, updated: boolean): string {
-    const lines = problems.map((problem) => `  ✗ ${LABELS[problem.kind]}  ${problem.id}\n      ${problem.message}`);
-    const exceptionProblems = problems.some((problem) => problem.kind !== 'unused-role');
+    const label = (problem: VerificationProblem) =>
+        problem.kind === 'unapproved' && problem.findingKind ? UNAPPROVED_LABELS[problem.findingKind] : LABELS[problem.kind];
+    const lines = problems.map((problem) => `  ✗ ${label(problem)}  ${problem.id}\n      ${problem.message}`);
+    const exceptionProblems = problems.some((problem) => !NOT_EXCEPTIONS.has(problem.kind));
     const hint = !exceptionProblems ? ''
         : updated
             ? `\n\n${exceptionsFile} was updated; fill in reason, approvedBy and approvedAt for each entry above.`
