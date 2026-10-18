@@ -72,6 +72,10 @@ export async function findBypasses(policy: EncodablePolicy): Promise<Array<Findi
         // bypass an invariant if one of its members can alone: checking roles one at a
         // time is complete, and attributes each finding to exactly one role.
         for (const role of policy.getRoles()) {
+            // A role with no permission here can't grant anything; skip the solver calls.
+            if (!policy.getPermissions(role).some((p) => p.action === action && p.resource === resource)) {
+                continue;
+            }
             const grants = encoder.roleCanDo(role, action, resource, symbols);
 
             for (const [invariant, condition] of conditions) {
