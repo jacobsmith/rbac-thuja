@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "exceptions": {
+    "compliance_officer|edit|article|published==false": {
+      "fingerprint": "sha256:190e1742eaff66fc31260dbd39b8c353a73eb45ffd7048a9f705753de0e49d20",
+      "reason": "Example fixture: compliance officers must be able to amend published articles (e.g. legal takedowns).",
+      "approvedBy": "example",
+      "approvedAt": "2026-10-18"
+    }
+  }
+}

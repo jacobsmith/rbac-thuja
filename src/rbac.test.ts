@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { init } from 'z3-solver';
-import { Rbac } from './rbac';
+import { Rbac } from './rbac.js';
 
 // --- Sanity check: confirms the z3-solver WASM toolchain is wired up. ---
 // Safe to delete once you trust the setup; keep the pattern for later specs

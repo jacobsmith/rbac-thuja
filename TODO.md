@@ -53,16 +53,108 @@ sense.
    even when [dangerous condition] holds."
 
 ### Suggested order of attack
-- [ ] `getDistinctConditions()` on `Encodable` — enumerate distinct
+- [x] `inferInvariants()` in `scan.ts` (was `getDistinctConditions()` on `Encodable`) — enumerate distinct
       `(action, condition-shape)` pairs actually present across all roles.
-- [ ] `negateCondition` (or similarly named) on `EncodableToZ3` — produce the
+- [x] Negation is just `Not(encodeCondition(...))` on `PolicyEncoder` (was `negateCondition` on `EncodableToZ3`) — produce the
       "dangerous pin" `Bool` for a given condition, mirroring `encodeCondition`'s
       dispatch structure.
-- [ ] Wire the two together into a scan method (e.g. `findPolicyViolations()`)
-      that loops over distinct conditions, builds the pin, runs
-      `anyRoleCanDo`, and collects/decodes every `sat` finding.
-- [ ] Decide the reporting shape — return structured results, or just
-      console-log a human-readable summary?
+- [x] Wire the two together into a scan method (`policy.findBypasses()`)
+      that loops over distinct conditions, builds the pin, and solves
+      **per role** (`roleCanDo(role, action) ∧ ¬invariant`) rather than via
+      `anyRoleCanDo`. Permissions are a pure union (no deny), so a role
+      combination can bypass only if one of its members can alone; per-role
+      solving gives exact attribution, whereas a single `anyRoleCanDo` model
+      can include incidental roles and only surfaces one offender.
+- [x] Decide the reporting shape — structured `Finding[]`
+      (`{ role, action, invariant, id }`); human-readable text is only
+      rendered in the thrown error (see below).
+
+## Exception allowlist + `verifyNoUnapprovedBypasses()` (pre-req for extracting Thuja)
+
+Thuja will be extracted into an npm package. Consumers should be able to
+write one unit test and have Thuja do everything else:
+
+```typescript
+import { policy } from '../src/authz/policy';
+
+it('has no unreviewed permission bypasses', async () => {
+    await policy.verifyNoUnapprovedBypasses({ exceptionsFile: 'thuja.exceptions.json' });
+});
+```
+
+The test passes, or throws one `Error` that lists every problem. Throwing
+keeps it independent of the test runner: vitest, jest, mocha and `node:test`
+all treat a rejected promise as a failure, so Thuja doesn't depend on vitest.
+
+### Exceptions file (checked into the consumer's repo)
+
+```jsonc
+{
+  "version": 1,                       // Thuja's canonicalization version
+  "exceptions": {
+    "compliance_officer|edit|published==false": {
+      "fingerprint": "sha256:…",      // canonical JSON of that role's permissions for that action
+      "reason": "Legal must amend published articles for takedowns",
+      "approvedBy": "jacob",
+      "approvedAt": "2026-10-18",
+      "expires": "2027-04-18"         // optional
+    }
+  }
+}
+```
+
+- Fingerprint scope = **one role's permissions for one action**. Hashing the
+  whole role is too noisy (adding `create` would invalidate an approved
+  `edit` bypass), and hashing the whole policy would invalidate everything.
+- `version` lets a later Thuja release change its canonicalization without
+  silently mass-invalidating every consumer's approvals: it can migrate the
+  fingerprints, or refuse with a clear message.
+
+### Outcomes (all hard-fail)
+
+| Situation                                   | Result                                    |
+|---------------------------------------------|-------------------------------------------|
+| Finding with no exception                   | fail: new bypass, needs approval          |
+| Exception whose fingerprint matches         | pass                                      |
+| Exception whose fingerprint changed         | fail: permissions changed, re-review      |
+| Exception with no matching finding          | fail: stale exception, remove it          |
+| Exception past `expires`                    | fail                                      |
+| Exception with an empty `reason`/`approvedBy` | fail                                    |
+
+### Update flow
+
+`THUJA_UPDATE=1 npm test` makes `verifyNoUnapprovedBypasses` rewrite the file.
+It adds stubs for new findings with blank `reason`/`approvedBy`, refreshes
+the fingerprints of changed exceptions and clears their approval fields,
+and removes stale exceptions. The test still fails until a human fills in
+the blanks. This works like `vitest -u`, but the human has to write a
+justification. Using an env var rather than a `npx thuja` CLI avoids having
+to load the consumer's TypeScript policy file from outside their test runner.
+
+Thuja should document a `CODEOWNERS` entry for `thuja.exceptions.json` as the
+real approval gate. The file records the decision; code review enforces it.
+
+### Library-shape prerequisites
+- [x] **Generic schema.** `Resource`, `RbacAction`, `RbacContext`
+      (`encoder.ts`) and `resourceToZ3Mapping`/`contextToZ3Mapping` are
+      hardcoded to the CMS article. Consumers need to declare their own
+      resource/context shape (e.g. `{ published: 'bool', authorId: 'string' }`)
+      and have Thuja derive both the TS types and the Z3 sorts/constants
+      from it.
+- [x] **`Policy` class** as the public entry point (replacing
+      `CmsRbac`/`Encodable` naming), generic over role and schema.
+- [x] **Thuja owns Z3.** `init()`, `Context` creation and symbolic
+      constants all stay internal; consumers never import `z3-solver`.
+- [x] **Keep Z3 off the runtime path.** Apps calling `policy.can()` in
+      production shouldn't load ~30MB of wasm. Either lazy-`import()`
+      z3-solver inside `verifyNoUnapprovedBypasses`, or ship verification from
+      a separate entrypoint (`thuja/verify`).
+- [x] **Canonical serializer** for permissions/conditions, shared by
+      fingerprints and finding IDs, with deterministic key order.
+- [x] **Deterministic output.** Sort findings; no `console.log` in library
+      code.
+- [ ] **Declared invariants** (optional `invariants` option) on top of the
+      inferred ones, to catch rules no role encodes yet.
 
 ## Compound conditions (AND / OR / NOT)
 
