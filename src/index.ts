@@ -19,3 +19,5 @@ export type {
 export { ImmutableRolesError, ThujaVerificationError, type VerificationProblem, type VerificationProblemKind } from "./errors.js";
 export type { Finding, FindingKind } from "./scan.js";
 export type { ExceptionEntry, ExceptionsFile, VerificationReport, VerifyOptions } from "./verify.js";
+export { definePolicy, describeRole, Expr } from "./dsl.js";
+export type { ConditionInput, ContextRef, Grants, Operators, PolicyDefinition, ResourceBuilder, Shorthand } from "./dsl.js";
