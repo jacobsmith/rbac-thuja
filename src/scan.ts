@@ -305,12 +305,20 @@ export async function scanPolicy(policy: EncodablePolicy): Promise<ScanResult> {
     const isSat = async (...assertions: Array<Bool>) => {
         solver.push();
         assertions.forEach((assertion) => solver.add(assertion));
-        const result = await solver.check();
-        solver.pop();
-        if (result === 'unknown') {
-            throw new Error('Z3 returned unknown.');
+        try {
+            // "unknown" isn't an answer, so asking again can't produce a wrong one; Z3 can give
+            // up transiently (e.g. when interrupted), so retry once before failing.
+            let result = await solver.check();
+            if (result === 'unknown') {
+                result = await solver.check();
+            }
+            if (result === 'unknown') {
+                throw new Error(`Z3 could not decide a policy question (reason: ${solver.reasonUnknown()}).`);
+            }
+            return result === 'sat';
+        } finally {
+            solver.pop();
         }
-        return result === 'sat';
     };
 
     const equivalent: Equivalence = async (a, b, resource) => {
